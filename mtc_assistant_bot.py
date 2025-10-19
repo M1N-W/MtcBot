@@ -17,7 +17,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 
 # ==========================================================================================
 # --- Configuration & Constants ---
-# การย้ายค่าที่ตั้งไว้ต่างๆ มารวมกันไว้ด้านบน ทำให้ง่ายต่อการแก้ไขในอนาคต
+# ย้ายค่าต่างๆมารวมกันไว้ด้านบน เพื่อให้ง่ายต่อการแก้ไขในอนาคต
 # ==========================================================================================
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -164,7 +164,7 @@ def get_gemini_response(user_message):
 @handler.add(FollowEvent)
 def handle_follow(event):
     """Handles when a user adds the bot as a friend."""
-    welcome_message = TextMessage(text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\nคุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\nคำสั่งมีดังนี้ครับ\n-"งาน" = ดูตารางงาน/การบ้าน\n-"เว็บ" = เข้าเว็บโรงเรียน\n-"ตารางสอน" = ตารางสอนห้อง ม.4/2\n-"ดูเกรด" = เข้าเว็บดูเกรด\n-"สอบ" = ดูวันสอบ&บอกว่าอีกกี่วันจะสอบ\n-"คาบต่อไป" = เช็คแบบเรียลไทม์ว่าคาบต่อไปเรียนอะไร')
+    welcome_message = TextMessage(text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\nคุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\nคำสั่งมีดังนี้ครับ\n-"งาน/การบ้าน" = ดูตารางงาน/การบ้าน\n-"เว็บ" = เข้าเว็บโรงเรียน\n-"ตารางสอน" = ตารางสอนห้อง ม.4/2\n-"ดูเกรด" = เข้าเว็บดูเกรด\n-"สอบ" = ดูวันสอบ&บอกว่าอีกกี่วันจะสอบ\n-"เรียนไรต่อ/คาบต่อไป" = เช็คแบบเรียลไทม์ว่าคาบต่อไปเรียนอะไร')
     reply_to_line(event.reply_token, [welcome_message])
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -178,10 +178,10 @@ def handle_message(event):
     # --- Command Router ---
     # Using a dictionary for commands makes the code cleaner and easier to extend.
     command_actions = {
-        ("งาน", "การบ้าน", "เช็คงาน"): lambda: TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ:\n{WORKSHEET_LINK}'),
-        ("เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"): lambda: TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ:\n{SCHOOL_LINK}'),
+        ("งาน", "การบ้าน", "เช็คงาน"): lambda: TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}'),
+        ("เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"): lambda: TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ\n{SCHOOL_LINK}'),
         ("ตารางเรียน", "ตารางสอน"): lambda: ImageMessage(original_content_url=TIMETABLE_IMG, preview_image_url=TIMETABLE_IMG),
-        ("เกรด", "ดูเกรด"): lambda: TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ:\n{GRADE_LINK}'),
+        ("เกรด", "ดูเกรด"): lambda: TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ\n{GRADE_LINK}'),
         ("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"): lambda: TextMessage(text=get_next_class_info()),
     }
 
@@ -192,7 +192,7 @@ def handle_message(event):
             break
     
     # Special handling for "สอบ" command
-    if not reply_message and "สอบ" in user_message or "นับถอยหลัง" in user_message:
+    if not reply_message and "สอบ" in user_message or "นับถอยหลังวันสอบ" in user_message:
         if "กลางภาค" in user_message:
             reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
         elif "ปลายภาค" in user_message:
