@@ -29,7 +29,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # --- 3. ตั้งค่าการเชื่อมต่อกับ Gemini AI ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-pro')
 else:
     model = None
 
