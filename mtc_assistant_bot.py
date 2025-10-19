@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# นี่คือโค้ดเวอร์ชันดั้งเดิมของ "MTC Assistant"
-# ทำงานเรียบง่าย เสถียร และตรงตามเป้าหมายหลักของเรา
+# นี่คือโค้ดเวอร์ชันสมบูรณ์ที่นายเขียนขึ้นเอง!
 
 import os
 from flask import Flask, request, abort
@@ -17,7 +16,8 @@ from linebot.v3.messaging import (
     ApiClient,
     MessagingApi,
     ReplyMessageRequest,
-    TextMessage
+    TextMessage,
+    ImageMessage
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -45,7 +45,7 @@ def handle_follow(event):
     จะส่งข้อความต้อนรับกลับไป
     """
     welcome_message = TextMessage(
-        text='สวัสดี! เรา MTC Assistant เองนะ\nผู้ช่วยแจ้งข่าวสารและตารางงานของห้อง ม.4/2\n\nพิมพ์ "งาน" หรือ "การบ้าน" เพื่อดูลิงก์ตารางงานทั้งหมดได้เลย!'
+        text='สวัสดีคับ! ผมคือ MTC Assistant \nผู้ช่วยสำหรับห้อง ม.4/2\n\nพิมพ์ "งาน" หรือ "การบ้าน" เพื่อดูลิงก์ตารางงานทั้งหมดได้เลย!'
     )
     
     with ApiClient(configuration) as api_client:
@@ -65,22 +65,31 @@ def handle_message(event):
     """
     user_message = event.message.text.lower().strip() # นำข้อความมาทำเป็นตัวพิมพ์เล็กและตัดช่องว่าง
     
-    # --- ใส่ลิงก์ Google Sheets ของเราตรงนี้ ---
     worksheet_link = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
+    school_link = "https://www.ben.ac.th/main/"
+    timetable_img = "https://img5.pic.in.th/file/secure-sv1/-273a6c762504bdd92.jpg"
     
     reply_message = None
 
     # เงื่อนไขการตอบกลับ
     if user_message in ["งาน", "การบ้าน", "เช็คงาน"]:
         reply_message = TextMessage(
-            text=f'นี่คือลิงก์สำหรับเช็คงานทั้งหมดของห้องเรานะ:\n{worksheet_link}'
+            text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ\n{worksheet_link}'
+        )
+    elif user_message in ["เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"]:
+        reply_message = TextMessage(
+            text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ\n{school_link}'
+        )
+    elif user_message in ["ตารางเรียน", "ตารางสอน"]:
+        reply_message = ImageMessage(
+            original_content_url=timetable_img,
+            preview_image_url=timetable_img
         )
     else:
         # ถ้าพิมพ์อย่างอื่นมา อาจจะให้บอทแนะนำตัวเอง
         reply_message = TextMessage(
-            text='พิมพ์ "งาน" หรือ "การบ้าน" เพื่อดูลิงก์ตารางงานทั้งหมดนะ'
-        )
-
+            text='พิมพ์ "งาน" หรือ "การบ้าน" เพื่อดูลิงก์ตารางงานนะครับ\n\nพิมพ์ "ตารางสอน" เพื่อดูตารางสอน ม.4 เทอม 2'
+        )   
     # ส่งข้อความตอบกลับ
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
