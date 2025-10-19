@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-
-# MTC Assistant v8: The AI Revolution! อัปเกรดสู่บอทอัจฉริยะด้วย Gemini AI
-
 import os
 import datetime
 from zoneinfo import ZoneInfo
@@ -9,7 +5,6 @@ from flask import Flask, request, abort
 
 # --- 1. นำเข้าเครื่องมือสำหรับคุยกับ Gemini AI ---
 import google.generativeai as genai
-
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -29,7 +24,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # --- 3. ตั้งค่าการเชื่อมต่อกับ Gemini AI ---
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-pro')
+    model = genai.GenerativeModel('gemini-1.5-flash')
 else:
     model = None
 
@@ -112,6 +107,30 @@ def handle_follow(event):
         line_bot_api.reply_message_with_http_info(ReplyMessageRequest(reply_token=event.reply_token, messages=[welcome_message]))
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+user_message = event.message.text.lower().strip()
+reply_message = None
+
+
+    try:
+        if model:
+            response = model.generate_content(user_message)
+            reply_text = response.text.strip() if response.text else "(ไม่มีคำตอบกลับจาก AI)"
+            if len(reply_text) > 1000: # จำกัดข้อความไม่ให้ยาวเกิน LINE limit
+                reply_text = reply_text[:1000] + "... (ข้อความถูกตัดให้พอดี)"
+            reply_message = TextMessage(text=reply_text)
+        else:
+            reply_message = TextMessage(text="ขออภัยครับ ระบบ AI ยังไม่ได้ตั้งค่าอย่างสมบูรณ์")
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        reply_message = TextMessage(text="เกิดข้อผิดพลาดจากฝั่ง Gemini API\nลองใหม่อีกครั้งนะครับ")
+
+
+with ApiClient(configuration) as api_client:
+    line_bot_api = MessagingApi(api_client)
+    line_bot_api.reply_message_with_http_info(
+        ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message])
+)
+
     user_message = event.message.text.lower().strip()
     
     worksheet_link = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
