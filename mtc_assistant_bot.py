@@ -46,7 +46,7 @@ try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
         # เปลี่ยนไปใช้โมเดล gemini-pro ที่มีความเสถียรและพร้อมใช้งานทั่วไป
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-2.5-flash')
     else:
         model = None
         print("Warning: GEMINI_API_KEY is not set. AI features will be disabled.")
