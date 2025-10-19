@@ -145,7 +145,7 @@ def create_countdown_message(exam_name, exam_date):
 @handler.add(FollowEvent)
 def handle_follow(event):
     """Handles when a user adds the bot as a friend."""
-    welcome_message = TextMessage(text='สวัสดีคับ! ผมคือ MTC Assistant\nผู้ช่วยอัจฉริยะสำหรับห้อง ม.4/2\n\n- ลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!')
+    welcome_message = TextMessage(text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\nคุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\nคำสั่งมีดังนี้ครับ\n-"งาน" = ดูตารางงาน/การบ้าน\n-"เว็บ" = เข้าเว็บโรงเรียน\n-"ตารางสอน" = ตารางสอนห้อง ม.4/2\n-"ดูเกรด" = เข้าเว็บดูเกรด\n-"สอบ" = ดูวันสอบ&บอกว่าอีกกี่วันจะสอบ\n-"คาบต่อไป" = เช็คแบบเรียลไทม์ว่าคาบต่อไปเรียนอะไร')
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
