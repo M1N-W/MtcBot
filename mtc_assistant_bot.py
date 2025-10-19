@@ -120,7 +120,7 @@ def get_next_class_info():
     current_time = now.time()
 
     if weekday not in SCHEDULE:
-        return "วันนี้วันหยุด กลับไปนอนได้ 🎉"
+        return "วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนไป้ 🎉"
 
     for period in SCHEDULE[weekday]:
         start_time = datetime.datetime.strptime(period["start"], "%H:%M").time()
