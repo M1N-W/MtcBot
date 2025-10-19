@@ -45,7 +45,8 @@ handler = WebhookHandler(CHANNEL_SECRET)
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # เปลี่ยนไปใช้โมเดล gemini-pro ที่มีความเสถียรและพร้อมใช้งานทั่วไป
+        model = genai.GenerativeModel('gemini-pro')
     else:
         model = None
         print("Warning: GEMINI_API_KEY is not set. AI features will be disabled.")
@@ -90,7 +91,7 @@ SCHEDULE = {
         {"start": "09:25", "end": "10:20", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "10:20", "end": "11:15", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "11:15", "end": "12:10", "subject": "ไทย (ครูเบญจมาศ)", "room": "947"},
-        {"start": "13:05", "end": "14:00", "subject": "สุขศึกษา&พละศึกษา (ครูนรเศรษฐ์)", "room": "ห้องเรียนหรือโดม"},
+        {"start": "13:05", "end": "14:00", "subject": "สุขศึกษา&พละศึกษา (ครูนรเศรษฐ์)", "room": "โดม2"},
         {"start": "14:00", "end": "14:55", "subject": "อังกฤษเพิ่มเติม (Teacher Mitch)", "room": "947"},
         {"start": "14:55", "end": "15:50", "subject": "คณิตพื้นฐาน (ครูปรียา)", "room": "947"},
     ],
@@ -246,3 +247,4 @@ if __name__ == "__main__":
     # ใช้ Port จาก Environment Variable หรือถ้าไม่มีให้ใช้ 5001
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port)
+
