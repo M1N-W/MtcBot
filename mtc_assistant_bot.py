@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
+
 import os
 import datetime
 from zoneinfo import ZoneInfo
 from flask import Flask, request, abort
 
-# --- 1. นำเข้าเครื่องมือสำหรับคุยกับ Gemini AI ---
+# --- 1. Import tools for Gemini AI and LINE Bot ---
 import google.generativeai as genai
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -12,25 +14,51 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 
+# ==========================================================================================
+# --- Configuration & Constants ---
+# การย้ายค่าที่ตั้งไว้ต่างๆ มารวมกันไว้ด้านบน ทำให้ง่ายต่อการแก้ไขในอนาคต
+# ==========================================================================================
 app = Flask(__name__)
+
+# LINE Bot Credentials
 ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
-# --- 2. ดึงกุญแจ Gemini API จาก Render ---
+
+# Gemini API Key
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
+# Bot Constants
+WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
+SCHOOL_LINK = "https://www.ben.ac.th/main/"
+TIMETABLE_IMG = "https://i.imgur.com/2s44t0A.jpeg"
+GRADE_LINK = "http://www.dograde2.online/bjrb/"
+FINAL_EXAM_DATE = datetime.date(2025, 2, 24) # สมมตินะครับ
+MID_EXAM_DATE = datetime.date(2024, 12, 23) # สมมตินะครับ
+
+# ==========================================================================================
+# --- Initialize APIs ---
+# ==========================================================================================
 configuration = Configuration(access_token=ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# --- 3. ตั้งค่าการเชื่อมต่อกับ Gemini AI ---
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-else:
+# Configure Gemini AI
+try:
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    else:
+        model = None
+        print("Warning: GEMINI_API_KEY is not set. AI features will be disabled.")
+except Exception as e:
     model = None
+    print(f"Error configuring Gemini AI: {e}")
 
-# --- (โค้ดส่วนฐานข้อมูลตารางเรียนและฟังก์ชันต่างๆ ยังอยู่เหมือนเดิม) ---
+# ==========================================================================================
+# --- Data & Helper Functions ---
+# ==========================================================================================
+
+# Class Schedule Data
 SCHEDULE = {
-    # ... (ข้อมูลตารางเรียนทั้งหมด) ...
     0: [ # วันจันทร์
         {"start": "08:30", "end": "09:25", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
         {"start": "09:25", "end": "10:20", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
@@ -62,7 +90,7 @@ SCHEDULE = {
         {"start": "09:25", "end": "10:20", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "10:20", "end": "11:15", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "11:15", "end": "12:10", "subject": "ไทย (ครูเบญจมาศ)", "room": "947"},
-        {"start": "13:05", "end": "14:00", "subject": "สุขศึกษา&พละศึกษา (ครูนรเศรษฐ์)", "room": "โดม2"},
+        {"start": "13:05", "end": "14:00", "subject": "สุขศึกษา&พละศึกษา (ครูนรเศรษฐ์)", "room": "ห้องเรียนหรือโดม"},
         {"start": "14:00", "end": "14:55", "subject": "อังกฤษเพิ่มเติม (Teacher Mitch)", "room": "947"},
         {"start": "14:55", "end": "15:50", "subject": "คณิตพื้นฐาน (ครูปรียา)", "room": "947"},
     ],
@@ -77,80 +105,75 @@ SCHEDULE = {
         {"start": "15:50", "end": "16:45", "subject": "IS (ครูปรียา)", "room": "947"},
     ]
 }
+
 def get_next_class_info():
+    """Checks the schedule and returns information about the next class."""
     now = datetime.datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     weekday = now.weekday()
     current_time = now.time()
+
     if weekday not in SCHEDULE:
         return "วันนี้วันหยุดพักผ่อน ไม่มีเรียนครับ! 🎉"
+
     day_schedule = SCHEDULE[weekday]
+
     for period in day_schedule:
         start_time = datetime.datetime.strptime(period["start"], "%H:%M").time()
         if current_time < start_time:
             return f"คาบต่อไป:\nเริ่มคาบ: {period['start']}\nจบคาบ: {period['end']}\nวิชา: {period['subject']}\nห้อง: {period['room']}"
+
     return "วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านได้! 🏠"
+
 def create_countdown_message(exam_name, exam_date):
+    """Creates a countdown message for a given exam date."""
     today = datetime.date.today()
     delta = exam_date - today
     days_left = delta.days
+
     if days_left > 0:
         return f"เหลืออีก {days_left} วันจะถึงวันสอบ{exam_name} ({exam_date.strftime('%d %b %Y')}) นะครับ"
     elif days_left == 0:
         return f"วันนี้วันสอบ{exam_name}แล้ว! โชคดีนะครับ!"
     else:
         return f"การสอบ{exam_name}ได้สิ้นสุดลงแล้วครับ"
+
+# ==========================================================================================
+# --- LINE Bot Event Handlers ---
+# ==========================================================================================
+
 @handler.add(FollowEvent)
 def handle_follow(event):
+    """Handles when a user adds the bot as a friend."""
     welcome_message = TextMessage(text='สวัสดีคับ! ผมคือ MTC Assistant\nผู้ช่วยอัจฉริยะสำหรับห้อง ม.4/2\n\n- ลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!')
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message_with_http_info(ReplyMessageRequest(reply_token=event.reply_token, messages=[welcome_message]))
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(reply_token=event.reply_token, messages=[welcome_message])
+            )
+    except Exception as e:
+        print(f"Error in handle_follow: {e}")
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-user_message = event.message.text.lower().strip()
-reply_message = None
-
-
-    try:
-        if model:
-            response = model.generate_content(user_message)
-            reply_text = response.text.strip() if response.text else "(ไม่มีคำตอบกลับจาก AI)"
-            if len(reply_text) > 1000: # จำกัดข้อความไม่ให้ยาวเกิน LINE limit
-                reply_text = reply_text[:1000] + "... (ข้อความถูกตัดให้พอดี)"
-            reply_message = TextMessage(text=reply_text)
-        else:
-            reply_message = TextMessage(text="ขออภัยครับ ระบบ AI ยังไม่ได้ตั้งค่าอย่างสมบูรณ์")
-    except Exception as e:
-        print(f"Gemini API Error: {e}")
-        reply_message = TextMessage(text="เกิดข้อผิดพลาดจากฝั่ง Gemini API\nลองใหม่อีกครั้งนะครับ")
-
-
-with ApiClient(configuration) as api_client:
-    line_bot_api = MessagingApi(api_client)
-    line_bot_api.reply_message_with_http_info(
-        ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message])
-)
-
+    """
+    Handles incoming text messages.
+    It first checks for specific commands. If no command matches,
+    it passes the message to the Gemini AI for a response.
+    """
     user_message = event.message.text.lower().strip()
-    
-    worksheet_link = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
-    school_link = "https://www.ben.ac.th/main/"
-    timetable_img = "https://i.imgur.com/2s44t0A.jpeg"
-    grade_link = "http://www.dograde2.online/bjrb/"
-    FINAL_EXAM_DATE = datetime.date(2025, 12, 15)
-    MID_EXAM_DATE = datetime.date(2025, 11, 15)
-    
     reply_message = None
 
-    # --- 4. อัปเกรดสมอง: เช็คคำสั่งเฉพาะก่อน ถ้าไม่ใช่ ค่อยส่งไปให้ AI ---
+    # --- Command Checking ---
+    # ตรวจสอบคำสั่งเฉพาะก่อนส่งไปให้ AI จะทำให้บอทตอบสนองได้เร็วและตรงประเด็นกว่า
     if user_message in ["งาน", "การบ้าน", "เช็คงาน"]:
-        reply_message = TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ:\n{worksheet_link}')
+        reply_message = TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ:\n{WORKSHEET_LINK}')
     elif user_message in ["เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"]:
-        reply_message = TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ:\n{school_link}')
+        reply_message = TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ:\n{SCHOOL_LINK}')
     elif user_message in ["ตารางเรียน", "ตารางสอน"]:
-        reply_message = ImageMessage(original_content_url=timetable_img, preview_image_url=timetable_img)
+        reply_message = ImageMessage(original_content_url=TIMETABLE_IMG, preview_image_url=TIMETABLE_IMG)
     elif user_message in ["เกรด", "ดูเกรด"]:
-        reply_message = TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ:\n{grade_link}')
+        reply_message = TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ:\n{GRADE_LINK}')
     elif "สอบ" in user_message or "นับถอยหลัง" in user_message:
         if "กลางภาค" in user_message:
             reply_text = create_countdown_message("กลางภาค", MID_EXAM_DATE)
@@ -165,32 +188,61 @@ with ApiClient(configuration) as api_client:
         reply_text = get_next_class_info()
         reply_message = TextMessage(text=reply_text)
     else:
-        # --- ถ้าไม่ใช่คำสั่งเฉพาะ ให้ส่งไปที่ Gemini AI ---
-        if model:
+        # --- AI Fallback ---
+        # ถ้าข้อความที่เข้ามาไม่ตรงกับคำสั่งใดๆ เลย จะส่งไปให้ Gemini AI ตอบ
+        if not model:
+            reply_message = TextMessage(text="ขออภัยครับ ระบบ AI ยังไม่ได้ตั้งค่าอย่างสมบูรณ์")
+        else:
             try:
-                # ส่งข้อความของผู้ใช้ไปให้ Gemini AI
                 response = model.generate_content(user_message)
-                # นำคำตอบที่ได้มาสร้างเป็นข้อความตอบกลับ
-                reply_message = TextMessage(text=response.text)
+                reply_text = response.text.strip() if response.text else "(AI ไม่ได้ตอบกลับ)"
+
+                # LINE มีข้อจำกัดความยาวของข้อความที่ 5000 ตัวอักษร
+                # เราควรตัดข้อความที่ยาวเกินไปเพื่อป้องกัน Error
+                if len(reply_text) > 4800:
+                    reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด)"
+
+                reply_message = TextMessage(text=reply_text)
             except Exception as e:
-                # หากเกิดข้อผิดพลาด ให้ตอบข้อความนี้แทน
                 print(f"Gemini API Error: {e}")
                 reply_message = TextMessage(text="ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ")
-        else:
-            reply_message = TextMessage(text="ขออภัยครับ ระบบ AI ยังไม่ได้ตั้งค่าอย่างสมบูรณ์")
-            
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message_with_http_info(ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message]))
+
+    # --- Send Reply ---
+    # รวมการส่งข้อความตอบกลับไว้ที่เดียว เพื่อลดความซ้ำซ้อนของโค้ด
+    if reply_message:
+        try:
+            with ApiClient(configuration) as api_client:
+                line_bot_api = MessagingApi(api_client)
+                line_bot_api.reply_message_with_http_info(
+                    ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message])
+                )
+        except Exception as e:
+            print(f"Error sending reply: {e}")
+
+
+# ==========================================================================================
+# --- Flask Web Server ---
+# ==========================================================================================
+
 @app.route("/callback", methods=['POST'])
 def callback():
+    """Webhook endpoint from LINE."""
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
+    app.logger.info(f"Request body: {body}")
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        app.logger.error("Invalid signature. Please check your channel secret.")
         abort(400)
+    except Exception as e:
+        app.logger.error(f"Error handling request: {e}")
+        abort(500)
+
     return 'OK'
+
 if __name__ == "__main__":
+    # ใช้ Port จาก Environment Variable หรือถ้าไม่มีให้ใช้ 5001
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port)
