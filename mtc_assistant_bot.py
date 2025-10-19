@@ -30,7 +30,7 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 # Bot Constants
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
 SCHOOL_LINK = "https://www.ben.ac.th/main/"
-TIMETABLE_IMG = "https://i.imgur.com/2s44t0A.jpeg"
+TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
 FINAL_EXAM_DATE = datetime.date(2025, 2, 24) # สมมตินะครับ
 MID_EXAM_DATE = datetime.date(2024, 12, 23) # สมมตินะครับ
