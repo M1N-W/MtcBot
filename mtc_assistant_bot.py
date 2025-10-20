@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v10.1 แก้เป็นร้อยรอบอยากร้องไห้
+MTC Assistant v11 แก้เป็นร้อยรอบอยากร้องไห้
 """
 
 # --- 1. Imports ---
@@ -8,6 +8,7 @@ import os
 import datetime
 import logging
 import inspect
+import re
 from zoneinfo import ZoneInfo
 from flask import Flask, request, abort
 
@@ -156,9 +157,21 @@ def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
         return f"การสอบ{exam_name}เสร็จสิ้นแล้วครับ"
 
 def get_gemini_response(user_message: str) -> str:
-    """Gets a response from the Gemini AI model."""
+    """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
+    # Fixed identity message requested by user:
+    identity_msg = ("บอทตัวนี้เป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
+                    "ซึ่งจะทำการช่วยเหลือด้วยฟีเจอร์ต่างๆตามคำสั่งที่ผู้ใช้พิมพ์มา "
+                    "และมีระบบ AI ของ Gemini ที่ทำให้สามารถตอบคำถามได้แบบ AI ครับ")
+
+    # If user explicitly asks "คุณคือใคร" หรือข้อความเกี่ยวกับตัวตน ให้ตอบข้อความตัวตนที่กำหนด
+    identity_queries = ["คุณคือใคร", "เป็นใคร", "who are you", "คุณชื่ออะไร", "ชื่ออะไร", "ตัวตน"]
+    lowered = user_message.lower()
+    if any(q in lowered for q in identity_queries):
+        return identity_msg
+
     if not gemini_model:
         return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
+
     try:
         # NOTE: SDK response shape may vary by version.
         # We try to be defensive: prefer .text, else fallback to str(response).
@@ -172,9 +185,37 @@ def get_gemini_response(user_message: str) -> str:
         else:
             reply_text = str(response).strip()
 
+        # --- Post-processing to enforce persona and remove Google ownership ---
+        # 1) Replace mentions of Google (Thai/English) with Gemini or remove claim
+        #    (we avoid claiming "เป็นของ Google")
+        reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
+        reply_text = reply_text.replace('กูเกิล', 'Gemini')
+
+        # 2) If the model claims it's a "แบบจำลอง" or "ฝึก" with provider, prefer our identity msg.
+        #    Look for phrases that indicate "I am a model" + provider and replace whole sentence.
+        if re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', reply_text, flags=re.IGNORECASE):
+            # Append the model's useful content but ensure identity is clear.
+            # To be safe, replace the part that seems like self-description with the identity message.
+            # A simple strategy: remove lines that contain those keywords and prepend identity_msg.
+            lines = reply_text.splitlines()
+            filtered_lines = [ln for ln in lines if not re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', ln, flags=re.IGNORECASE)]
+            remaining = "\n".join(filtered_lines).strip()
+            reply_text = identity_msg
+            if remaining:
+                reply_text = reply_text + "\n\n" + remaining
+
+        # 3) Enforce Thai male polite ending: replace 'ค่ะ' with 'ครับ'
+        reply_text = reply_text.replace('ค่ะ', 'ครับ')
+
+        # 4) If response does not already end with 'ครับ' (or other polite marker), add 'ครับ'
+        if not re.search(r'ครับ\s*$', reply_text):
+            # avoid adding duplicate polite particle if already present earlier
+            reply_text = reply_text.rstrip() + ' ครับ'
+
         # LINE มีข้อจำกัดความยาวข้อความที่ 5000 ตัวอักษร
         if len(reply_text) > 4800:
-            reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด)"
+            reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด) ครับ"
+
         return reply_text
     except Exception as e:
         app.logger.error(f"Gemini API Error: {e}", exc_info=True)
@@ -238,16 +279,20 @@ def get_help_message():
 
 def get_exam_countdown_message(user_message: str):
     """Creates a countdown message for exams based on user input."""
+    # Clean, correct implementation (was a broken line before)
     if "กลางภาค" in user_message:
         reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
     elif "ปลายภาค" in user_message:
         reply_text = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
-    else:  # กรณี default ถ้าพิมพ์แค่ "สอบ"
-        midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
-        final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายาภาค"]) if "ปลายภาค" in EXAM_DATES else create_countdown_message("ปลายภาค", EXAM_DATES["ปลายาภาค"])
-        # Note: above line intentionally safe; but real code uses EXAM_DATES keys exactly as defined
-        reply_text = f"{midterm}\n\n{final}"
+    else:  # default when user just types "สอบ" or similar
+        midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"]) if "กลางภาค" in EXAM_DATES else ""
+        final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"]) if "ปลายภาค" in EXAM_DATES else ""
+        if midterm and final:
+            reply_text = f"{midterm}\n\n{final}"
+        else:
+            reply_text = midterm or final or "ไม่พบวันสอบในระบบครับ"
     return TextMessage(text=reply_text)
+
 # ==========================================================================================
 # --- 6. LINE Bot Event Handlers ---
 # ==========================================================================================
@@ -299,7 +344,7 @@ def handle_message(event):
                 else:
                     reply_message = action()
             except (ValueError, TypeError):
-                # ถ้า action ไม่สามารถตรวจสอบ signature ได้ (เช่น builtins), ให้ลองเรียกโดยไม่ส่ง arg ก่อน
+                # ถ้า action ไม่สามารถตรวจสอบ signature ได้ (เช่น builtins), ให้ลองเรียกโดยไม่ส่ง arg ก่[...]
                 try:
                     reply_message = action()
                 except TypeError:
