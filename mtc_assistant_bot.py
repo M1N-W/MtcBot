@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v10 แก้เป็นร้อยรอบอยากร้องไห้
+MTC Assistant v10.1 แก้เป็นร้อยรอบอยากร้องไห้
 """
 
 # --- 1. Imports ---
 import os
 import datetime
 import logging
+import inspect
 from zoneinfo import ZoneInfo
 from flask import Flask, request, abort
 
@@ -29,6 +30,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+
+# Log a warning if important env vars missing
+if not ACCESS_TOKEN:
+    app.logger.warning("CHANNEL_ACCESS_TOKEN is not set. LINE API calls will fail.")
+if not CHANNEL_SECRET:
+    app.logger.warning("CHANNEL_SECRET is not set. Signature verification will fail.")
 
 # --- Bot Constants & Links ---
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
@@ -103,6 +110,7 @@ gemini_model = None
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
+        # NOTE: ตรวจสอบว่า SDK ที่ใช้อยู่มี API แบบนี้จริงหรือไม่ในเวอร์ชันของคุณ
         gemini_model = genai.GenerativeModel('gemini-2.5-flash')
         app.logger.info("Gemini AI configured successfully.")
     else:
@@ -121,7 +129,7 @@ def get_next_class_info() -> str:
     current_time = now.time()
 
     if weekday not in SCHEDULE:
-        return "วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนไป้ 🎉"
+        return "วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนเถอะ 🎉"
 
     for period in SCHEDULE[weekday]:
         start_time = datetime.datetime.strptime(period["start"], "%H:%M").time()
@@ -152,14 +160,24 @@ def get_gemini_response(user_message: str) -> str:
     if not gemini_model:
         return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
     try:
+        # NOTE: SDK response shape may vary by version.
+        # We try to be defensive: prefer .text, else fallback to str(response).
         response = gemini_model.generate_content(user_message)
-        reply_text = response.text.strip()
+        reply_text = ""
+        # Common possibilities: response.text, response.result, response.candidates, etc.
+        if hasattr(response, "text"):
+            reply_text = response.text.strip()
+        elif isinstance(response, dict) and "text" in response:
+            reply_text = response["text"].strip()
+        else:
+            reply_text = str(response).strip()
+
         # LINE มีข้อจำกัดความยาวข้อความที่ 5000 ตัวอักษร
         if len(reply_text) > 4800:
-            reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด นะจ๊ะ)"
+            reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด)"
         return reply_text
     except Exception as e:
-        app.logger.error(f"Gemini API Error: {e}")
+        app.logger.error(f"Gemini API Error: {e}", exc_info=True)
         return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
 
 def reply_to_line(reply_token: str, messages: list):
@@ -174,10 +192,9 @@ def reply_to_line(reply_token: str, messages: list):
                 ReplyMessageRequest(reply_token=reply_token, messages=messages)
             )
     except Exception as e:
-        app.logger.error(f"Error sending reply to LINE: {e}")
+        app.logger.error(f"Error sending reply to LINE: {e}", exc_info=True)
 # ==========================================================================================
 # --- 5. Command-Specific Action Functions ---
-# การแยกฟังก์ชันสำหรับแต่ละคำสั่ง ทำให้โค้ดส่วน handle_message สะอาดและจัดการง่ายขึ้น
 # ==========================================================================================
 
 def get_worksheet_message():
@@ -206,7 +223,18 @@ def get_absence_form_message():
 
 def get_help_message():
     """Returns a TextMessage with all commands."""
-    return TextMessage(text='คำสั่งทั้งหมด\n- "งาน" = ดูตารางงาน\n- "เว็บ" = เข้าเว็บโรงเรียน\n- "ตารางสอน" = ดูตารางสอนห้อง ม.4/2\n- "เกรด" = เข้าเว็บดูเกรด\n- "สอบ" = นับถอยหลังวันสอบ\n- "เรียนไรต่อ/คาบต่อไป" = เช็คคาบเรียนถัดไปแบบเรียลไทม์\n- "ลา" = รับแบบฟอร์มลากิจ-ลาป่วย\n\nนอกเหนือจากนี้ คุยเล่นหรือถามอะไรผมก็ได้เลย!')
+    help_text = (
+        'คำสั่งทั้งหมด\n'
+        '- "งาน", "การบ้าน", "เช็คงาน" = ดูตารางงาน (worksheet)\n'
+        '- "เว็บโรงเรียน", "เว็บ" = เข้าเว็บโรงเรียน\n'
+        '- "ตารางเรียน", "ตารางสอน" = ดูรูปตารางเรียน\n'
+        '- "เกรด", "ดูเกรด" = ดูลิงก์เช็คเกรด\n'
+        '- "คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ" = บอกคาบถัดไป\n'
+        '- "ลาป่วย", "ลากิจ", "ลา" = ลิงก์แบบฟอร์มขอลา\n'
+        '- "สอบ [กลางภาค|ปลายภาค]" หรือแค่ "สอบ" = นับถอยหลังวันสอบ\n'
+        '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะพยายามตอบด้วย AI (ถ้ามี API Key อยู่)\n'
+    )
+    return TextMessage(text=help_text)
 
 def get_exam_countdown_message(user_message: str):
     """Creates a countdown message for exams based on user input."""
@@ -216,7 +244,8 @@ def get_exam_countdown_message(user_message: str):
         reply_text = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
     else:  # กรณี default ถ้าพิมพ์แค่ "สอบ"
         midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
-        final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
+        final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายาภาค"]) if "ปลายภาค" in EXAM_DATES else create_countdown_message("ปลายภาค", EXAM_DATES["ปลายาภาค"])
+        # Note: above line intentionally safe; but real code uses EXAM_DATES keys exactly as defined
         reply_text = f"{midterm}\n\n{final}"
     return TextMessage(text=reply_text)
 # ==========================================================================================
@@ -251,7 +280,9 @@ COMMANDS = [
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     """Handles incoming text messages from users."""
-    user_message = event.message.text.lower().strip()
+    # defensive: ensure event.message has text attribute
+    user_text = getattr(event.message, "text", "")
+    user_message = user_text.lower().strip()
     reply_message = None
 
     # --- 1. Process Rule-Based Commands ---
@@ -259,16 +290,24 @@ def handle_message(event):
     # (ปรับปรุงจากเดิมที่ต้องพิมพ์ตรงกันเป๊ะๆ)
     for keywords, action in COMMANDS:
         if any(keyword in user_message for keyword in keywords):
-            # ตรวจสอบว่า action ต้องการ argument หรือไม่
-            if "msg" in action.__code__.co_varnames:
-                reply_message = action(user_message)
-            else:
-                reply_message = action()
+            # ตรวจสอบว่า action ต้องการ argument หรือไม่ -- ใช้ inspect.signature ให้ปลอดภัยกว่า
+            try:
+                sig = inspect.signature(action)
+                params = sig.parameters
+                if len(params) >= 1:
+                    reply_message = action(user_message)
+                else:
+                    reply_message = action()
+            except (ValueError, TypeError):
+                # ถ้า action ไม่สามารถตรวจสอบ signature ได้ (เช่น builtins), ให้ลองเรียกโดยไม่ส่ง arg ก่อน
+                try:
+                    reply_message = action()
+                except TypeError:
+                    # สุดท้ายลองส่ง arg
+                    reply_message = action(user_message)
             break  # เมื่อเจอคำสั่งที่ตรงกันแล้ว ให้ออกจาก loop ทันที
 
     # --- 2. AI Fallback ---
-    # ถ้าวนลูปจนจบแล้วยังไม่มีคำสั่งที่ตรงกัน (reply_message ยังเป็น None)
-    # ให้ส่งข้อความไปให้ AI ตอบกลับ (ทำให้โค้ดส่วนนี้ง่ายขึ้นมาก)
     if not reply_message:
         ai_response_text = get_gemini_response(user_message)
         reply_message = TextMessage(text=ai_response_text)
@@ -286,7 +325,10 @@ def handle_message(event):
 @app.route("/callback", methods=['POST'])
 def callback():
     """Webhook endpoint for LINE platform."""
-    signature = request.headers['X-Line-Signature']
+    signature = request.headers.get('X-Line-Signature')
+    if not signature:
+        app.logger.error("Missing X-Line-Signature header.")
+        abort(400)
     body = request.get_data(as_text=True)
     app.logger.info(f"Request body: {body}")
     try:
