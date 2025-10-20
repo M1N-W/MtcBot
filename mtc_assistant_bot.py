@@ -105,7 +105,7 @@ gemini_model = None
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        gemini_model = genai.GenerativeModel('gemini-2.5-flash')
         app.logger.info("Gemini AI configured successfully.")
     else:
         app.logger.warning("GEMINI_API_KEY is not set. AI features will be disabled.")
@@ -185,11 +185,11 @@ def reply_to_line(reply_token: str, messages: list):
 
 def get_worksheet_message():
     """Returns a TextMessage with the worksheet link."""
-    return TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ:\n{WORKSHEET_LINK}')
+    return TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}')
 
 def get_school_link_message():
     """Returns a TextMessage with the school link."""
-    return TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ:\n{SCHOOL_LINK}')
+    return TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ\n{SCHOOL_LINK}')
 
 def get_timetable_image_message():
     """Returns an ImageMessage with the class timetable."""
@@ -197,7 +197,7 @@ def get_timetable_image_message():
 
 def get_grade_link_message():
     """Returns a TextMessage with the grade checking link."""
-    return TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ:\n{GRADE_LINK}')
+    return TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ\n{GRADE_LINK}')
 
 def get_next_class_message():
     """Returns a TextMessage with the info for the next class."""
@@ -205,11 +205,11 @@ def get_next_class_message():
 
 def get_absence_form_message():
     """Returns a TextMessage with the absence form link."""
-    return TextMessage(text=f'นี่คือแบบฟอร์มลากิจ-ลาป่วยนะครับ:\n{ABSENCE_LINK}')
+    return TextMessage(text=f'นี่คือแบบฟอร์มลากิจ-ลาป่วยนะครับ\n{ABSENCE_LINK}')
 
 def get_help_message():
     """Returns a TextMessage with all commands."""
-    return TextMessage(text='คำสั่งทั้งหมด\n- "งาน": ดูตารางงาน\n- "เว็บ": เข้าเว็บโรงเรียน\n- "ตารางเรียน": ดูรูปตารางสอน\n- "เกรด": เข้าเว็บดูเกรด\n- "สอบ": นับถอยหลังวันสอบ\n- "คาบต่อไป": เช็คคาบเรียนถัดไป\n- "ลา": รับแบบฟอร์มลากิจ-ลาป่วย\n\nนอกเหนือจากนี้ คุยเล่นหรือถามอะไรผมก็ได้เลย!')
+    return TextMessage(text='คำสั่งทั้งหมด\n- "งาน" = ดูตารางงาน\n- "เว็บ" = เข้าเว็บโรงเรียน\n- "ตารางสอน" = ดูตารางสอนห้อง ม.4/2\n- "เกรด" = เข้าเว็บดูเกรด\n- "สอบ" = นับถอยหลังวันสอบ\n- "เรียนไรต่อ/คาบต่อไป" = เช็คคาบเรียนถัดไปแบบเรียลไทม์\n- "ลา" = รับแบบฟอร์มลากิจ-ลาป่วย\n\nนอกเหนือจากนี้ คุยเล่นหรือถามอะไรผมก็ได้เลย!')
 
 def get_exam_countdown_message(user_message: str):
     """Creates a countdown message for exams based on user input."""
@@ -233,7 +233,7 @@ def handle_follow(event):
     welcome_message = TextMessage(
         text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\n'
              'คุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\n'
-             'พิมพ์ "คำสั่ง" เพื่อดูรายการคำสั่งทั้งหมดครับ'
+             'พิมพ์ "คำสั่ง" เพื่อดูรายการคำสั่งทั้งหมดนะครับ'
     )
     reply_to_line(event.reply_token, [welcome_message])
 
