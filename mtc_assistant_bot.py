@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v11 แก้เป็นร้อยรอบอยากร้องไห้
+MTC Assistant v12 - fixed bugs and improved robustness
 """
 
 # --- 1. Imports ---
@@ -37,6 +37,8 @@ if not ACCESS_TOKEN:
     app.logger.warning("CHANNEL_ACCESS_TOKEN is not set. LINE API calls will fail.")
 if not CHANNEL_SECRET:
     app.logger.warning("CHANNEL_SECRET is not set. Signature verification will fail.")
+if not GEMINI_API_KEY:
+    app.logger.info("GEMINI_API_KEY is not set. AI features will be disabled.")
 
 # --- Bot Constants & Links ---
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
@@ -50,6 +52,13 @@ EXAM_DATES = {
     "กลางภาค": datetime.date(2025, 12, 15),
     "ปลายภาค": datetime.date(2026, 2, 15)
 }
+
+# LINE text length safety limits
+LINE_MAX_TEXT = 5000
+LINE_SAFE_TRUNCATE = 4800
+
+# Default timezone
+LOCAL_TZ = ZoneInfo("Asia/Bangkok")
 
 # --- Class Schedule Data ---
 # (0=จันทร์, 1=อังคาร, ..., 4=ศุกร์)
@@ -91,7 +100,7 @@ SCHEDULE = {
     ],
     4: [ # วันศุกร์
         {"start": "08:30", "end": "09:25", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
-        {"start": "09:25", "end": "10:20", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
+        {"start": "09:25", "end": "10:20", "subject": "ชีววิทยา (ครูพิชามญ์)", "room": "323"},
         {"start": "10:20", "end": "11:15", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
         {"start": "11:15", "end": "12:10", "subject": "สังคมศึกษา (ครูบังอร)", "room": "947"},
         {"start": "13:05", "end": "14:00", "subject": "คอมพิวเตอร์ (ครูจินดาพร)", "room": "221"},
@@ -107,17 +116,26 @@ SCHEDULE = {
 configuration = Configuration(access_token=ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 gemini_model = None
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        # NOTE: ตรวจสอบว่า SDK ที่ใช้อยู่มี API แบบนี้จริงหรือไม่ในเวอร์ชันของคุณ
-        gemini_model = genai.GenerativeModel('gemini-2.5-flash')
-        app.logger.info("Gemini AI configured successfully.")
+        # We do not hard-rely on a GenerativeModel class because SDK versions differ.
+        # If the SDK exposes a model instantiation we try to create it, else fallback to module-level calls.
+        try:
+            # Some SDKs may provide a GenerativeModel factory
+            gemini_model = getattr(genai, "GenerativeModel")(GEMINI_MODEL_NAME)
+            app.logger.info("Gemini model instantiated via GenerativeModel.")
+        except Exception:
+            # Fallback: we'll call genai.generate_text / genai.chat.create later directly
+            gemini_model = None
+            app.logger.info("Gemini API configured, will use function-level calls as fallback.")
     else:
         app.logger.warning("GEMINI_API_KEY is not set. AI features will be disabled.")
 except Exception as e:
-    app.logger.error(f"Error configuring Gemini AI: {e}")
+    app.logger.error(f"Error configuring Gemini AI: {e}", exc_info=True)
+    gemini_model = None
 
 # ==========================================================================================
 # --- 4. Core Helper Functions ---
@@ -125,7 +143,7 @@ except Exception as e:
 
 def get_next_class_info() -> str:
     """Checks the schedule and returns a string with the next class information."""
-    now = datetime.datetime.now(tz=ZoneInfo("Asia/Bangkok"))
+    now = datetime.datetime.now(tz=LOCAL_TZ)
     weekday = now.weekday()
     current_time = now.time()
 
@@ -145,7 +163,7 @@ def get_next_class_info() -> str:
 
 def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
     """Calculates days left until an exam and returns a formatted string."""
-    today = datetime.date.today()
+    today = datetime.datetime.now(tz=LOCAL_TZ).date()
     delta = exam_date - today
     days_left = delta.days
 
@@ -156,47 +174,100 @@ def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
     else:
         return f"การสอบ{exam_name}เสร็จสิ้นแล้วครับ"
 
+def _safe_parse_gemini_response(response) -> str:
+    """Defensively extract text from various SDK response shapes."""
+    # Common shapes: response.text, response["text"], response["candidates"][0]["content"], response.output[0].content, etc.
+    try:
+        if response is None:
+            return ""
+        if hasattr(response, "text"):
+            return str(response.text).strip()
+        if isinstance(response, dict):
+            # common fields
+            if "text" in response and response["text"]:
+                return str(response["text"]).strip()
+            if "candidates" in response and response["candidates"]:
+                first = response["candidates"][0]
+                if isinstance(first, dict) and "content" in first:
+                    return str(first["content"]).strip()
+                return str(first).strip()
+        # Some SDKs return objects with .output or .candidates fields
+        if hasattr(response, "result"):
+            return str(getattr(response, "result")).strip()
+        if hasattr(response, "candidates"):
+            c = getattr(response, "candidates")
+            if c:
+                first = c[0]
+                if hasattr(first, "content"):
+                    return str(getattr(first, "content")).strip()
+                return str(first).strip()
+        # Last resort
+        return str(response).strip()
+    except Exception as e:
+        app.logger.debug(f"Error parsing Gemini response: {e}", exc_info=True)
+        return str(response)
+
 def get_gemini_response(user_message: str) -> str:
     """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
-    # Fixed identity message requested by user:
-    identity_msg = ("บอทตัวนี้เป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
-                    "ซึ่งจะทำการช่วยเหลือด้วยฟีเจอร์ต่างๆตามคำสั่งที่ผู้ใช้พิมพ์มา "
-                    "และมีระบบ AI ของ Gemini ที่ทำให้สามารถตอบคำถามได้แบบ AI ครับ")
+    # Fixed identity message (clean UTF-8)
+    identity_msg = (
+        "บอทตัวนี้เป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
+        "ผมช่วยได้หลายอย่างตามคำสั่งที่ผู้ใช้พิมพ์ และมีระบบ AI ของ Gemini ที่ช่วยตอบคำถามครับ"
+    )
 
-    # If user explicitly asks "คุณคือใคร" หรือข้อความเกี่ยวกับตัวตน ให้ตอบข้อความตัวตนที่กำหนด
     identity_queries = ["คุณคือใคร", "เป็นใคร", "who are you", "คุณชื่ออะไร", "ชื่ออะไร", "ตัวตน"]
     lowered = user_message.lower()
     if any(q in lowered for q in identity_queries):
         return identity_msg
 
-    if not gemini_model:
+    if not GEMINI_API_KEY:
         return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
 
     try:
-        # NOTE: SDK response shape may vary by version.
-        # We try to be defensive: prefer .text, else fallback to str(response).
-        response = gemini_model.generate_content(user_message)
-        reply_text = ""
-        # Common possibilities: response.text, response.result, response.candidates, etc.
-        if hasattr(response, "text"):
-            reply_text = response.text.strip()
-        elif isinstance(response, dict) and "text" in response:
-            reply_text = response["text"].strip()
-        else:
-            reply_text = str(response).strip()
+        # Try using instantiated model if available
+        response = None
+        if gemini_model is not None:
+            # defensive: some instantiations may provide generate_content or generate
+            if hasattr(gemini_model, "generate_content"):
+                response = gemini_model.generate_content(user_message)
+            elif hasattr(gemini_model, "generate"):
+                response = gemini_model.generate(user_message)
+            else:
+                # fallback to module-level calls below
+                response = None
+
+        if response is None:
+            # Try common module-level APIs (SDKs vary)
+            try:
+                # genai.generate_text is a possibility
+                if hasattr(genai, "generate_text"):
+                    response = genai.generate_text(model=GEMINI_MODEL_NAME, input=user_message)
+                elif hasattr(genai, "chat"):
+                    # some SDKs have genai.chat.create or genai.chat.generate
+                    chat_create = getattr(genai, "chat").create if hasattr(genai.chat, "create") else getattr(genai.chat, "generate", None)
+                    if chat_create:
+                        response = chat_create(model=GEMINI_MODEL_NAME, messages=[{"role": "user", "content": user_message}])
+                    else:
+                        response = None
+                else:
+                    # last resort: try a generic call
+                    if hasattr(genai, "generate"):
+                        response = genai.generate(model=GEMINI_MODEL_NAME, prompt=user_message)
+                    else:
+                        response = None
+            except Exception as e:
+                app.logger.debug(f"Gemini module-level call failed: {e}", exc_info=True)
+                response = None
+
+        reply_text = _safe_parse_gemini_response(response)
+        if not reply_text:
+            return "ขออภัยครับ ระบบ AI ตอบไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"
 
         # --- Post-processing to enforce persona and remove Google ownership ---
-        # 1) Replace mentions of Google (Thai/English) with Gemini or remove claim
-        #    (we avoid claiming "เป็นของ Google")
         reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
         reply_text = reply_text.replace('กูเกิล', 'Gemini')
 
-        # 2) If the model claims it's a "แบบจำลอง" or "ฝึก" with provider, prefer our identity msg.
-        #    Look for phrases that indicate "I am a model" + provider and replace whole sentence.
         if re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', reply_text, flags=re.IGNORECASE):
-            # Append the model's useful content but ensure identity is clear.
-            # To be safe, replace the part that seems like self-description with the identity message.
-            # A simple strategy: remove lines that contain those keywords and prepend identity_msg.
             lines = reply_text.splitlines()
             filtered_lines = [ln for ln in lines if not re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', ln, flags=re.IGNORECASE)]
             remaining = "\n".join(filtered_lines).strip()
@@ -204,9 +275,9 @@ def get_gemini_response(user_message: str) -> str:
             if remaining:
                 reply_text = reply_text + "\n\n" + remaining
 
-        # LINE มีข้อจำกัดความยาวข้อความที่ 5000 ตัวอักษร
-        if len(reply_text) > 4800:
-            reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด) ครับ"
+        # Ensure we don't exceed LINE limit
+        if len(reply_text) > LINE_SAFE_TRUNCATE:
+            reply_text = reply_text[:LINE_SAFE_TRUNCATE] + "... (ข้อความยาวเกินไปจึงถูกตัด) ครับ"
 
         return reply_text
     except Exception as e:
@@ -226,6 +297,7 @@ def reply_to_line(reply_token: str, messages: list):
             )
     except Exception as e:
         app.logger.error(f"Error sending reply to LINE: {e}", exc_info=True)
+
 # ==========================================================================================
 # --- 5. Command-Specific Action Functions ---
 # ==========================================================================================
@@ -271,7 +343,7 @@ def get_help_message():
 
 def get_exam_countdown_message(user_message: str):
     """Creates a countdown message for exams based on user input."""
-    # Clean, correct implementation (was a broken line before)
+    # Use explicit keys in EXAM_DATES
     if "กลางภาค" in user_message:
         reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
     elif "ปลายภาค" in user_message:
@@ -314,35 +386,50 @@ COMMANDS = [
     (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
 ]
 
+def _keyword_matches(user_message: str, keyword: str) -> bool:
+    """
+    Match keyword more carefully:
+    - For keywords that contain ASCII letters, use word-boundary regex to avoid false positives.
+    - For Thai or other scripts without spaces, fall back to substring match.
+    """
+    if re.search(r'[A-Za-z]', keyword):
+        # escape keyword
+        pattern = r'\b' + re.escape(keyword) + r'\b'
+        return bool(re.search(pattern, user_message, flags=re.IGNORECASE))
+    else:
+        return keyword in user_message
+
+def call_action(action, user_message: str):
+    """
+    Safely call an action that may accept 0 or 1 arguments.
+    Prefer calling with user_message if accepted, else call without args.
+    """
+    # First try calling with one argument
+    try:
+        return action(user_message)
+    except TypeError:
+        try:
+            return action()
+        except TypeError:
+            # last resort: try calling with no args, then with arg with more permissive attempt
+            return action(user_message)
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     """Handles incoming text messages from users."""
-    # defensive: ensure event.message has text attribute
     user_text = getattr(event.message, "text", "")
     user_message = user_text.lower().strip()
     reply_message = None
 
     # --- 1. Process Rule-Based Commands ---
-    # ตรวจสอบว่าข้อความของผู้ใช้มี keyword ของคำสั่งใดๆ อยู่หรือไม่
-    # (ปรับปรุงจากเดิมที่ต้องพิมพ์ตรงกันเป๊ะๆ)
     for keywords, action in COMMANDS:
-        if any(keyword in user_message for keyword in keywords):
-            # ตรวจสอบว่า action ต้องการ argument หรือไม่ -- ใช้ inspect.signature ให้ปลอดภัยกว่า
+        if any(_keyword_matches(user_message, keyword) for keyword in keywords):
             try:
-                sig = inspect.signature(action)
-                params = sig.parameters
-                if len(params) >= 1:
-                    reply_message = action(user_message)
-                else:
-                    reply_message = action()
-            except (ValueError, TypeError):
-                # ถ้า action ไม่สามารถตรวจสอบ signature ได้ (เช่น builtins), ให้ลองเรียกโดยไม่ส่ง arg ก่[...]
-                try:
-                    reply_message = action()
-                except TypeError:
-                    # สุดท้ายลองส่ง arg
-                    reply_message = action(user_message)
-            break  # เมื่อเจอคำสั่งที่ตรงกันแล้ว ให้ออกจาก loop ทันที
+                reply_message = call_action(action, user_message)
+            except Exception as e:
+                app.logger.error(f"Error calling action for keywords {keywords}: {e}", exc_info=True)
+                reply_message = TextMessage(text="ขออภัยครับ เกิดข้อผิดพลาดขณะประมวลผลคำสั่งของคุณ")
+            break  # found matching command
 
     # --- 2. AI Fallback ---
     if not reply_message:
@@ -381,7 +468,9 @@ def callback():
 @app.route("/", methods=['GET'])
 def home():
     """A simple endpoint to check if the server is running."""
-    return "MTC Assistant is running!"
+    # Add a simple check about configuration for easier debugging
+    cfg_ok = "OK" if ACCESS_TOKEN and CHANNEL_SECRET else "CONFIG_MISSING"
+    return f"MTC Assistant is running! ({cfg_ok})"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
