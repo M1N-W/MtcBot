@@ -242,7 +242,7 @@ def handle_follow(event):
 # Tuple ประกอบด้วย: ( (คำสั่งที่1, คำสั่งที่2), ฟังก์ชันที่จะทำงาน )
 COMMANDS = [
     (("งาน", "การบ้าน", "เช็คงาน"), get_worksheet_message),
-    (("เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"), get_school_link_message),
+    (("เว็บโรงเรียน", "เว็บ"), get_school_link_message),
     (("ตารางเรียน", "ตารางสอน"), get_timetable_image_message),
     (("เกรด", "ดูเกรด"), get_grade_link_message),
     (("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"), get_next_class_message),
