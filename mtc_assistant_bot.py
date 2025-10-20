@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
+"""
+MTC Assistant v9.2 (Refactored)
+LINE Bot ผู้ช่วยสำหรับห้องเรียน ม.4/2 ที่รวมการทำงานแบบกำหนดคำสั่ง (Rule-based)
+และตอบคำถามทั่วไปด้วย Generative AI (Gemini)
+"""
 
+# --- 1. Imports ---
 import os
 import datetime
+import logging
 from zoneinfo import ZoneInfo
 from flask import Flask, request, abort
-import logging
 
-# --- 1. Import tools for Gemini AI and LINE Bot ---
 import google.generativeai as genai
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -16,55 +21,32 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 
 # ==========================================================================================
-# --- Configuration & Constants ---
-# ย้ายค่าต่างๆมารวมกันไว้ด้านบน เพื่อให้ง่ายต่อการแก้ไขในอนาคต
+# --- 2. Configuration & Constants ---
 # ==========================================================================================
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+# ตั้งค่า logging เพื่อให้แสดงผลใน production environment
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# LINE Bot Credentials
+# --- Credentials (ดึงจาก Environment Variables เพื่อความปลอดภัย) ---
 ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
-
-# Gemini API Key
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
-# Bot Constants & Links
+# --- Bot Constants & Links ---
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
 SCHOOL_LINK = "https://www.ben.ac.th/main/"
 TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
+ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
 
-# Exam Dates
-# NOTE: It's better to manage these dates in a config file or database for easier updates.
+# --- Exam Dates ---
 EXAM_DATES = {
     "กลางภาค": datetime.date(2025, 12, 15),
     "ปลายภาค": datetime.date(2026, 2, 15)
 }
 
-# ==========================================================================================
-# --- Initialize APIs ---
-# ==========================================================================================
-configuration = Configuration(access_token=ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
-model = None
-
-# Configure Gemini AI
-try:
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
-        app.logger.info("Gemini AI configured successfully.")
-    else:
-        app.logger.warning("GEMINI_API_KEY is not set. AI features will be disabled.")
-except Exception as e:
-    app.logger.error(f"Error configuring Gemini AI: {e}")
-
-# ==========================================================================================
-# --- Data & Helper Functions ---
-# ==========================================================================================
-
-# NOTE: For better maintainability, consider moving this schedule to a separate JSON file.
+# --- Class Schedule Data ---
+# (0=จันทร์, 1=อังคาร, ..., 4=ศุกร์)
 SCHEDULE = {
     0: [ # วันจันทร์
         {"start": "08:30", "end": "09:25", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
@@ -113,8 +95,29 @@ SCHEDULE = {
     ]
 }
 
-def get_next_class_info():
-    """Checks the schedule and returns information about the next class."""
+# ==========================================================================================
+# --- 3. Initialize APIs ---
+# ==========================================================================================
+configuration = Configuration(access_token=ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
+gemini_model = None
+
+try:
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        app.logger.info("Gemini AI configured successfully.")
+    else:
+        app.logger.warning("GEMINI_API_KEY is not set. AI features will be disabled.")
+except Exception as e:
+    app.logger.error(f"Error configuring Gemini AI: {e}")
+
+# ==========================================================================================
+# --- 4. Core Helper Functions ---
+# ==========================================================================================
+
+def get_next_class_info() -> str:
+    """Checks the schedule and returns a string with the next class information."""
     now = datetime.datetime.now(tz=ZoneInfo("Asia/Bangkok"))
     weekday = now.weekday()
     current_time = now.time()
@@ -125,12 +128,16 @@ def get_next_class_info():
     for period in SCHEDULE[weekday]:
         start_time = datetime.datetime.strptime(period["start"], "%H:%M").time()
         if current_time < start_time:
-            return f"คาบต่อไป มีรายละเอียดดังนี้ครับ\nเริ่มคาบ: {period['start']}\nจบคาบ: {period['end']}\nวิชา: {period['subject']}\nห้อง: {period['room']}"
+            return (f"คาบต่อไป มีรายละเอียดดังนี้ครับ\n"
+                    f"เริ่มคาบ: {period['start']}\n"
+                    f"จบคาบ: {period['end']}\n"
+                    f"วิชา: {period['subject']}\n"
+                    f"ห้อง: {period['room']}")
 
     return "วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านไปนอนได้ 🏠"
 
-def create_countdown_message(exam_name, exam_date):
-    """Creates a countdown message for a given exam date."""
+def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
+    """Calculates days left until an exam and returns a formatted string."""
     today = datetime.date.today()
     delta = exam_date - today
     days_left = delta.days
@@ -142,14 +149,14 @@ def create_countdown_message(exam_name, exam_date):
     else:
         return f"การสอบ{exam_name}เสร็จสิ้นแล้วครับ"
 
-def get_gemini_response(user_message):
+def get_gemini_response(user_message: str) -> str:
     """Gets a response from the Gemini AI model."""
-    if not model:
+    if not gemini_model:
         return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
     try:
-        response = model.generate_content(user_message)
-        reply_text = response.text.strip() if response.text else "(AI ไม่ได้ตอบกลับ)"
-        # Truncate long messages to avoid LINE API errors
+        response = gemini_model.generate_content(user_message)
+        reply_text = response.text.strip()
+        # LINE มีข้อจำกัดความยาวข้อความที่ 5000 ตัวอักษร
         if len(reply_text) > 4800:
             reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด นะจ๊ะ)"
         return reply_text
@@ -157,85 +164,135 @@ def get_gemini_response(user_message):
         app.logger.error(f"Gemini API Error: {e}")
         return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
 
-# ==========================================================================================
-# --- LINE Bot Event Handlers ---
-# ==========================================================================================
-
-@handler.add(FollowEvent)
-def handle_follow(event):
-    """Handles when a user adds the bot as a friend."""
-    welcome_message = TextMessage(text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\nคุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\nคำสั่งมีดังนี้ครับ\n-"งาน/การบ้าน" = ดูตารางงานและการบ้านที่ครูสั่ง\n-"เว็บ" = เข้าเว็บโรงเรียน\n-"ตารางสอน" = ตารางสอนห้อง ม.4/2\n-"ดูเกรด" = เข้าเว็บดูเกรด\n-"สอบ" = ดูวันสอบ&บอกว่าอีกกี่วันจะสอบ\n-"เรียนไรต่อ/คาบต่อไป" = เช็คแบบเรียลไทม์ว่าคาบต่อไปเรียนอะไร')
-    reply_to_line(event.reply_token, [welcome_message])
-
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    """
-    Handles incoming text messages by routing them to command handlers or the AI.
-    """
-    user_message = event.message.text.lower().strip()
-    reply_message = None
-
-    # --- Command Router ---
-    # Using a dictionary for commands makes the code cleaner and easier to extend.
-    command_actions = {
-        ("งาน", "การบ้าน", "เช็คงาน"): lambda: TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}'),
-        ("เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"): lambda: TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ\n{SCHOOL_LINK}'),
-        ("ตารางเรียน", "ตารางสอน"): lambda: ImageMessage(original_content_url=TIMETABLE_IMG, preview_image_url=TIMETABLE_IMG),
-        ("เกรด", "ดูเกรด"): lambda: TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ\n{GRADE_LINK}'),
-        ("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"): lambda: TextMessage(text=get_next_class_info()),
-    }
-
-    # Find and execute the command action
-    for keywords, action in command_actions.items():
-        if user_message in keywords:
-            reply_message = action()
-            break
-    
-    # Special handling for "สอบ" command
-    if not reply_message and "สอบ" in user_message or "นับถอยหลังวันสอบ" in user_message:
-        if "กลางภาค" in user_message:
-            reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
-        elif "ปลายภาค" in user_message:
-            reply_text = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
-        else:
-            midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
-            final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
-            reply_text = f"{midterm}\n\n{final}"
-        reply_message = TextMessage(text=reply_text)
-
-    # --- AI Fallback ---
-    # If no command was matched, send the message to Gemini AI.
-    if not reply_message:
-        ai_response_text = get_gemini_response(user_message)
-        reply_message = TextMessage(text=ai_response_text)
-
-    # --- Send Reply ---
-    reply_to_line(event.reply_token, [reply_message])
-
-def reply_to_line(reply_token, messages):
-    """A helper function to send reply messages to LINE."""
+def reply_to_line(reply_token: str, messages: list):
+    """Sends a reply message to the LINE user."""
     if not messages:
+        app.logger.warning("reply_to_line called with no messages.")
         return
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            line_bot_api.reply_message_with_http_info(
+            line_bot_api.reply_message(
                 ReplyMessageRequest(reply_token=reply_token, messages=messages)
             )
     except Exception as e:
         app.logger.error(f"Error sending reply to LINE: {e}")
 
 # ==========================================================================================
-# --- Flask Web Server ---
+# --- 5. Command-Specific Action Functions ---
+# การแยกฟังก์ชันสำหรับแต่ละคำสั่ง ทำให้โค้ดส่วน handle_message สะอาดและจัดการง่ายขึ้น
 # ==========================================================================================
 
+def get_worksheet_message():
+    """Returns a TextMessage with the worksheet link."""
+    return TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ:\n{WORKSHEET_LINK}')
+
+def get_school_link_message():
+    """Returns a TextMessage with the school link."""
+    return TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ:\n{SCHOOL_LINK}')
+
+def get_timetable_image_message():
+    """Returns an ImageMessage with the class timetable."""
+    return ImageMessage(original_content_url=TIMETABLE_IMG, preview_image_url=TIMETABLE_IMG)
+
+def get_grade_link_message():
+    """Returns a TextMessage with the grade checking link."""
+    return TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ:\n{GRADE_LINK}')
+
+def get_next_class_message():
+    """Returns a TextMessage with the info for the next class."""
+    return TextMessage(text=get_next_class_info())
+
+def get_absence_form_message():
+    """Returns a TextMessage with the absence form link."""
+    return TextMessage(text=f'นี่คือแบบฟอร์มลากิจ-ลาป่วยนะครับ:\n{ABSENCE_LINK}')
+
+def get_help_message():
+    """Returns a TextMessage with all commands."""
+    return TextMessage(text='คำสั่งทั้งหมด:\n- "งาน": ดูตารางงาน\n- "เว็บ": เข้าเว็บโรงเรียน\n- "ตารางเรียน": ดูรูปตารางสอน\n- "เกรด": เข้าเว็บดูเกรด\n- "สอบ": นับถอยหลังวันสอบ\n- "คาบต่อไป": เช็คคาบเรียนถัดไป\n- "ลา": รับแบบฟอร์มลากิจ-ลาป่วย\n\nนอกเหนือจากนี้ คุยเล่นกับผมได้เลย!')
+
+def get_exam_countdown_message(user_message: str):
+    """Creates a countdown message for exams based on user input."""
+    if "กลางภาค" in user_message:
+        reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
+    elif "ปลายภาค" in user_message:
+        reply_text = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
+    else:  # กรณี default ถ้าพิมพ์แค่ "สอบ"
+        midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
+        final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
+        reply_text = f"{midterm}\n\n{final}"
+    return TextMessage(text=reply_text)
+
+# ==========================================================================================
+# --- 6. LINE Bot Event Handlers ---
+# ==========================================================================================
+
+@handler.add(FollowEvent)
+def handle_follow(event):
+    """Handles when a user adds the bot as a friend."""
+    welcome_message = TextMessage(
+        text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\n'
+             'คุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\n'
+             'พิมพ์ "คำสั่ง" เพื่อดูรายการคำสั่งทั้งหมดครับ'
+    )
+    reply_to_line(event.reply_token, [welcome_message])
+
+# --- โครงสร้าง Command Mapping ที่ปรับปรุงใหม่ ---
+# เก็บเป็น List of Tuples ทำให้ง่ายต่อการเพิ่ม/ลดคำสั่ง
+# Tuple ประกอบด้วย: ( (คำสั่งที่1, คำสั่งที่2), ฟังก์ชันที่จะทำงาน )
+COMMANDS = [
+    (("งาน", "การบ้าน", "เช็คงาน"), get_worksheet_message),
+    (("เว็บโรงเรียน", "โรงเรียนเบญ", "เว็บ"), get_school_link_message),
+    (("ตารางเรียน", "ตารางสอน"), get_timetable_image_message),
+    (("เกรด", "ดูเกรด"), get_grade_link_message),
+    (("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"), get_next_class_message),
+    (("ลาป่วย", "ลากิจ", "ลา"), get_absence_form_message),
+    (("คำสั่ง", "help", "ช่วยเหลือ"), get_help_message),
+    # สำหรับคำสั่งที่ต้องการข้อมูลจาก user_message เราใช้ lambda เพื่อส่งค่าเข้าไป
+    (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
+]
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+    """Handles incoming text messages from users."""
+    user_message = event.message.text.lower().strip()
+    reply_message = None
+
+    # --- 1. Process Rule-Based Commands ---
+    # ตรวจสอบว่าข้อความของผู้ใช้มี keyword ของคำสั่งใดๆ อยู่หรือไม่
+    # (ปรับปรุงจากเดิมที่ต้องพิมพ์ตรงกันเป๊ะๆ)
+    for keywords, action in COMMANDS:
+        if any(keyword in user_message for keyword in keywords):
+            # ตรวจสอบว่า action ต้องการ argument หรือไม่
+            if "msg" in action.__code__.co_varnames:
+                reply_message = action(user_message)
+            else:
+                reply_message = action()
+            break  # เมื่อเจอคำสั่งที่ตรงกันแล้ว ให้ออกจาก loop ทันที
+
+    # --- 2. AI Fallback ---
+    # ถ้าวนลูปจนจบแล้วยังไม่มีคำสั่งที่ตรงกัน (reply_message ยังเป็น None)
+    # ให้ส่งข้อความไปให้ AI ตอบกลับ (ทำให้โค้ดส่วนนี้ง่ายขึ้นมาก)
+    if not reply_message:
+        ai_response_text = get_gemini_response(user_message)
+        reply_message = TextMessage(text=ai_response_text)
+
+    # --- 3. Send Reply ---
+    if reply_message:
+        reply_to_line(event.reply_token, [reply_message])
+    else:
+        app.logger.warning(f"No reply was generated for message: {user_message}")
+
+
+# ==========================================================================================
+# --- 7. Flask Web Server ---
+# ==========================================================================================
 @app.route("/callback", methods=['POST'])
 def callback():
-    """Webhook endpoint from LINE."""
+    """Webhook endpoint for LINE platform."""
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
     app.logger.info(f"Request body: {body}")
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -244,10 +301,13 @@ def callback():
     except Exception as e:
         app.logger.error(f"Error handling request: {e}", exc_info=True)
         abort(500)
-
     return 'OK'
 
+@app.route("/", methods=['GET'])
+def home():
+    """A simple endpoint to check if the server is running."""
+    return "MTC Assistant is running!"
+
 if __name__ == "__main__":
-    # Use Port from Environment Variable or default to 5001
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port)
