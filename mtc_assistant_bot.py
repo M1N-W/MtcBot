@@ -204,14 +204,6 @@ def get_gemini_response(user_message: str) -> str:
             if remaining:
                 reply_text = reply_text + "\n\n" + remaining
 
-        # 3) Enforce Thai male polite ending: replace 'ค่ะ' with 'ครับ'
-        reply_text = reply_text.replace('ค่ะ', 'ครับ')
-
-        # 4) If response does not already end with 'ครับ' (or other polite marker), add 'ครับ'
-        if not re.search(r'ครับ\s*$', reply_text):
-            # avoid adding duplicate polite particle if already present earlier
-            reply_text = reply_text.rstrip() + ' ครับ'
-
         # LINE มีข้อจำกัดความยาวข้อความที่ 5000 ตัวอักษร
         if len(reply_text) > 4800:
             reply_text = reply_text[:4800] + "... (ข้อความยาวเกินไปจึงถูกตัด) ครับ"
