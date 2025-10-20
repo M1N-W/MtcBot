@@ -125,7 +125,7 @@ def get_next_class_info():
     for period in SCHEDULE[weekday]:
         start_time = datetime.datetime.strptime(period["start"], "%H:%M").time()
         if current_time < start_time:
-            return f"คาบต่อไป:\nเริ่มคาบ: {period['start']}\nจบคาบ: {period['end']}\nวิชา: {period['subject']}\nห้อง: {period['room']}"
+            return f"คาบต่อไป มีรายละเอียดดังนี้ครับ\nเริ่มคาบ: {period['start']}\nจบคาบ: {period['end']}\nวิชา: {period['subject']}\nห้อง: {period['room']}"
 
     return "วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านไปนอนได้ 🏠"
 
