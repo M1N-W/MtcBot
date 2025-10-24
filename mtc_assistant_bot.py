@@ -49,8 +49,8 @@ ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
 
 # --- Exam Dates ---
 EXAM_DATES = {
-    "กลางภาค": datetime.date(2025, 12, 15),
-    "ปลายภาค": datetime.date(2026, 2, 15)
+    "กลางภาค": datetime.date(2025, 12, 20),
+    "ปลายภาค": datetime.date(2026, 2, 20)
 }
 
 # LINE text length safety limits
@@ -100,7 +100,7 @@ SCHEDULE = {
     ],
     4: [ # วันศุกร์
         {"start": "08:30", "end": "09:25", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
-        {"start": "09:25", "end": "10:20", "subject": "ชีววิทยา (ครูพิชามญ์)", "room": "323"},
+        {"start": "09:25", "end": "10:20", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "10:20", "end": "11:15", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
         {"start": "11:15", "end": "12:10", "subject": "สังคมศึกษา (ครูบังอร)", "room": "947"},
         {"start": "13:05", "end": "14:00", "subject": "คอมพิวเตอร์ (ครูจินดาพร)", "room": "221"},
@@ -211,7 +211,7 @@ def get_gemini_response(user_message: str) -> str:
     """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
     # Fixed identity message (clean UTF-8)
     identity_msg = (
-        "บอทตัวนี้เป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
+        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
         "ผมช่วยได้หลายอย่างตามคำสั่งที่ผู้ใช้พิมพ์ และมีระบบ AI ของ Gemini ที่ช่วยตอบคำถามครับ"
     )
 
@@ -304,7 +304,7 @@ def reply_to_line(reply_token: str, messages: list):
 
 def get_worksheet_message():
     """Returns a TextMessage with the worksheet link."""
-    return TextMessage(text=f'นี่คือลิงก์เช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}')
+    return TextMessage(text=f'นี่คือตารางเช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}')
 
 def get_school_link_message():
     """Returns a TextMessage with the school link."""
@@ -330,14 +330,14 @@ def get_help_message():
     """Returns a TextMessage with all commands."""
     help_text = (
         'คำสั่งทั้งหมด\n'
-        '- "งาน", "การบ้าน", "เช็คงาน" = ดูตารางงาน (worksheet)\n'
+        '- "งาน" = ดูตารางงาน (worksheet)\n'
         '- "เว็บโรงเรียน", "เว็บ" = เข้าเว็บโรงเรียน\n'
-        '- "ตารางเรียน", "ตารางสอน" = ดูรูปตารางเรียน\n'
-        '- "เกรด", "ดูเกรด" = ดูลิงก์เช็คเกรด\n'
-        '- "คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ" = บอกคาบถัดไป\n'
-        '- "ลาป่วย", "ลากิจ", "ลา" = ลิงก์แบบฟอร์มขอลา\n'
-        '- "สอบ [กลางภาค|ปลายภาค]" หรือแค่ "สอบ" = นับถอยหลังวันสอบ\n'
-        '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะพยายามตอบด้วย AI (ถ้ามี API Key อยู่)\n'
+        '- "ตารางสอน" = ตารางสอนเทอม 2 ห้อง 4/2\n'
+        '- "เกรด" = เข้าเว็บเช็คเกรด\n'
+        '- "คาบต่อไป/เรียนไรต่อ" = เช็คคาบถัดไปแบบเรียลไทม์\n'
+        '- "ลาป่วย/ลากิจ/ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
+        '- "สอบ" = นับถอยหลังวันสอบ\n'
+        '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะพยายามตอบด้วย AI'
     )
     return TextMessage(text=help_text)
 
