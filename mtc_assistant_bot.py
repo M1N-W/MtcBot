@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v14 - Song Searching Feature
+MTC Assistant v14 - Song Searching Feature + YouTube validation
 """
 
 # --- 1. Imports ---
 import os
 import datetime
 import logging
-import inspect
 import re
+import json
+from typing import Optional
 from zoneinfo import ZoneInfo
+
+import requests
 from flask import Flask, request, abort
 
 import google.generativeai as genai
@@ -24,21 +27,22 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 # --- 2. Configuration & Constants ---
 # ==========================================================================================
 app = Flask(__name__)
-# ตั้งค่า logging เพื่อให้แสดงผลใน production environment
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Credentials (ดึงจาก Environment Variables เพื่อความปลอดภัย) ---
+# --- Credentials (from environment) ---
 ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY')  # Optional but highly recommended
 
-# Log a warning if important env vars missing
 if not ACCESS_TOKEN:
     app.logger.warning("CHANNEL_ACCESS_TOKEN is not set. LINE API calls will fail.")
 if not CHANNEL_SECRET:
     app.logger.warning("CHANNEL_SECRET is not set. Signature verification will fail.")
 if not GEMINI_API_KEY:
     app.logger.info("GEMINI_API_KEY is not set. AI features will be disabled.")
+if not YOUTUBE_API_KEY:
+    app.logger.info("YOUTUBE_API_KEY is not set. YouTube validation will use fallback (less reliable).")
 
 # --- Bot Constants & Links ---
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
@@ -47,23 +51,19 @@ TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
 ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
 Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/view?usp=sharing"
-# --- Exam Dates ---
+
 EXAM_DATES = {
     "กลางภาค": datetime.date(2025, 12, 20),
     "ปลายภาค": datetime.date(2026, 2, 20)
 }
 
-# LINE text length safety limits
 LINE_MAX_TEXT = 5000
 LINE_SAFE_TRUNCATE = 4800
-
-# Default timezone
 LOCAL_TZ = ZoneInfo("Asia/Bangkok")
 
-# --- Class Schedule Data ---
-# (0=จันทร์, 1=อังคาร, ..., 4=ศุกร์)
+# --- Class schedule omitted for brevity (same as before) ---
 SCHEDULE = {
-    0: [ # วันจันทร์
+    0: [
         {"start": "08:30", "end": "09:25", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
         {"start": "09:25", "end": "10:20", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
         {"start": "10:20", "end": "11:15", "subject": "เคมี (ครูพิทยาภรณ์)", "room": "311"},
@@ -73,7 +73,7 @@ SCHEDULE = {
         {"start": "14:55", "end": "15:50", "subject": "คณิตเพิ่มเติม (ครูมานพ)", "room": "947"},
         {"start": "15:50", "end": "16:45", "subject": "คณิตเพิ่มเติม (ครูมานพ)", "room": "947"},
     ],
-    1: [ # วันอังคาร
+    1: [
         {"start": "08:30", "end": "09:25", "subject": "เคมี (ครูพิทยาภรณ์)", "room": "311"},
         {"start": "09:25", "end": "10:20", "subject": "เคมี (ครูพิทยาภรณ์)", "room": "311"},
         {"start": "10:20", "end": "11:15", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "333"},
@@ -83,13 +83,13 @@ SCHEDULE = {
         {"start": "14:55", "end": "15:50", "subject": "ไทย (ครูเบญจมาศ)", "room": "947"},
         {"start": "15:50", "end": "16:45", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
     ],
-    2: [ # วันพุธ
+    2: [
         {"start": "08:30", "end": "09:25", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
         {"start": "09:25", "end": "10:20", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "10:20", "end": "11:15", "subject": "ประวัติศาสตร์ (ครูณฐพร)", "room": "947"},
         {"start": "11:15", "end": "12:10", "subject": "คณิตพื้นฐาน (ครูปรียา)", "room": "947"},
     ],
-    3: [ # วันพฤหัสบดี
+    3: [
         {"start": "08:30", "end": "09:25", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "09:25", "end": "10:20", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "10:20", "end": "11:15", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
@@ -98,7 +98,7 @@ SCHEDULE = {
         {"start": "14:00", "end": "14:55", "subject": "อังกฤษเพิ่มเติม (Teacher Mitch)", "room": "947"},
         {"start": "14:55", "end": "15:50", "subject": "คณิตพื้นฐาน (ครูปรียา)", "room": "947"},
     ],
-    4: [ # วันศุกร์
+    4: [
         {"start": "08:30", "end": "09:25", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "09:25", "end": "10:20", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "10:20", "end": "11:15", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
@@ -121,14 +121,10 @@ GEMINI_MODEL_NAME = "gemini-2.5-flash"
 try:
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
-        # We do not hard-rely on a GenerativeModel class because SDK versions differ.
-        # If the SDK exposes a model instantiation we try to create it, else fallback to module-level calls.
         try:
-            # Some SDKs may provide a GenerativeModel factory
             gemini_model = getattr(genai, "GenerativeModel")(GEMINI_MODEL_NAME)
             app.logger.info("Gemini model instantiated via GenerativeModel.")
         except Exception:
-            # Fallback: we'll call genai.generate_text / genai.chat.create later directly
             gemini_model = None
             app.logger.info("Gemini API configured, will use function-level calls as fallback.")
     else:
@@ -142,7 +138,6 @@ except Exception as e:
 # ==========================================================================================
 
 def get_next_class_info() -> str:
-    """Checks the schedule and returns a string with the next class information."""
     now = datetime.datetime.now(tz=LOCAL_TZ)
     weekday = now.weekday()
     current_time = now.time()
@@ -158,11 +153,9 @@ def get_next_class_info() -> str:
                     f"จบคาบ : {period['end']}\n"
                     f"วิชา : {period['subject']}\n"
                     f"ห้อง : {period['room']}")
-
     return "วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านไปนอนได้ 🏠"
 
 def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
-    """Calculates days left until an exam and returns a formatted string."""
     today = datetime.datetime.now(tz=LOCAL_TZ).date()
     delta = exam_date - today
     days_left = delta.days
@@ -175,15 +168,12 @@ def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
         return f"การสอบ{exam_name}ได้สิ้นสุดลงแล้วครับ"
 
 def _safe_parse_gemini_response(response) -> str:
-    """Defensively extract text from various SDK response shapes."""
-    # Common shapes: response.text, response["text"], response["candidates"][0]["content"], response.output[0].content, etc.
     try:
         if response is None:
             return ""
         if hasattr(response, "text"):
             return str(response.text).strip()
         if isinstance(response, dict):
-            # common fields
             if "text" in response and response["text"]:
                 return str(response["text"]).strip()
             if "candidates" in response and response["candidates"]:
@@ -191,7 +181,6 @@ def _safe_parse_gemini_response(response) -> str:
                 if isinstance(first, dict) and "content" in first:
                     return str(first["content"]).strip()
                 return str(first).strip()
-        # Some SDKs return objects with .output or .candidates fields
         if hasattr(response, "result"):
             return str(getattr(response, "result")).strip()
         if hasattr(response, "candidates"):
@@ -201,18 +190,15 @@ def _safe_parse_gemini_response(response) -> str:
                 if hasattr(first, "content"):
                     return str(getattr(first, "content")).strip()
                 return str(first).strip()
-        # Last resort
         return str(response).strip()
     except Exception as e:
         app.logger.debug(f"Error parsing Gemini response: {e}", exc_info=True)
         return str(response)
 
 def get_gemini_response(user_message: str) -> str:
-    """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
-    # Fixed identity message (clean UTF-8)
     identity_msg = (
         "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
-        "ผมช่วยได้หลายอย่างตามคำสั่งที่ผู้ใช้พิมพ์ และมีระบบ AI ของ Gemini ที่ช่วยตอบคำถามครับ"
+        "ผมช่วยได้หลายอย่าง เช่น แจ้งตาราง, ลิงก์เว็บโรงเรียน, หาตารางสอน, และช่วยหาข้อมูลทั่วไปด้วย AI"
     )
 
     identity_queries = ["คุณคือใคร", "เป็นใคร", "who are you", "คุณชื่ออะไร", "ชื่ออะไร", "ตัวตน"]
@@ -224,33 +210,26 @@ def get_gemini_response(user_message: str) -> str:
         return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
 
     try:
-        # Try using instantiated model if available
         response = None
         if gemini_model is not None:
-            # defensive: some instantiations may provide generate_content or generate
             if hasattr(gemini_model, "generate_content"):
                 response = gemini_model.generate_content(user_message)
             elif hasattr(gemini_model, "generate"):
                 response = gemini_model.generate(user_message)
             else:
-                # fallback to module-level calls below
                 response = None
 
         if response is None:
-            # Try common module-level APIs (SDKs vary)
             try:
-                # genai.generate_text is a possibility
                 if hasattr(genai, "generate_text"):
                     response = genai.generate_text(model=GEMINI_MODEL_NAME, input=user_message)
                 elif hasattr(genai, "chat"):
-                    # some SDKs have genai.chat.create or genai.chat.generate
                     chat_create = getattr(genai, "chat").create if hasattr(genai.chat, "create") else getattr(genai.chat, "generate", None)
                     if chat_create:
                         response = chat_create(model=GEMINI_MODEL_NAME, messages=[{"role": "user", "content": user_message}])
                     else:
                         response = None
                 else:
-                    # last resort: try a generic call
                     if hasattr(genai, "generate"):
                         response = genai.generate(model=GEMINI_MODEL_NAME, prompt=user_message)
                     else:
@@ -263,7 +242,6 @@ def get_gemini_response(user_message: str) -> str:
         if not reply_text:
             return "ขออภัยครับ ระบบ AI ตอบไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"
 
-        # --- Post-processing to enforce persona and remove Google ownership ---
         reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
         reply_text = reply_text.replace('กูเกิล', 'Gemini')
 
@@ -275,7 +253,6 @@ def get_gemini_response(user_message: str) -> str:
             if remaining:
                 reply_text = reply_text + "\n\n" + remaining
 
-        # Ensure we don't exceed LINE limit
         if len(reply_text) > LINE_SAFE_TRUNCATE:
             reply_text = reply_text[:LINE_SAFE_TRUNCATE] + "... (ระบบตัดข้อความที่ยาวเกิน 5,000 คำโดยอัตโนมัติ)"
 
@@ -285,7 +262,6 @@ def get_gemini_response(user_message: str) -> str:
         return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
 
 def reply_to_line(reply_token: str, messages: list):
-    """Sends a reply message to the LINE user."""
     if not messages:
         app.logger.warning("reply_to_line called with no messages.")
         return
@@ -301,37 +277,28 @@ def reply_to_line(reply_token: str, messages: list):
 # ==========================================================================================
 # --- 5. Command-Specific Action Functions ---
 # ==========================================================================================
-
 def get_worksheet_message():
-    """Returns a TextMessage with the worksheet link."""
     return TextMessage(text=f'นี่คือตารางเช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}')
 
 def get_school_link_message():
-    """Returns a TextMessage with the school link."""
     return TextMessage(text=f'นี่คือลิงก์เว็บโรงเรียนนะครับ\n{SCHOOL_LINK}')
 
 def get_timetable_image_message():
-    """Returns an ImageMessage with the class timetable."""
     return ImageMessage(original_content_url=TIMETABLE_IMG, preview_image_url=TIMETABLE_IMG)
 
 def get_grade_link_message():
-    """Returns a TextMessage with the grade checking link."""
     return TextMessage(text=f'นี่คือลิงก์เว็บดูเกรดนะครับ\n{GRADE_LINK}')
 
 def get_next_class_message():
-    """Returns a TextMessage with the info for the next class."""
     return TextMessage(text=get_next_class_info())
 
 def get_absence_form_message():
-    """Returns a TextMessage with the absence form link."""
     return TextMessage(text=f'นี่คือแบบฟอร์มลากิจ-ลาป่วยนะครับ\n{ABSENCE_LINK}')
 
 def get_bio_link_message():
-    """Returns a TextMessage with the biology link."""
     return TextMessage(text=f'นี่คือเฉลยชีวะ บทที่ 4-7 นะครับ\n{Bio_LINK}')
 
 def get_help_message():
-    """Returns a TextMessage with all commands."""
     help_text = (
         'คำสั่งทั้งหมด\n'
         '- "งาน" = ดูตารางงาน (worksheet)\n'
@@ -347,59 +314,149 @@ def get_help_message():
     )
     return TextMessage(text=help_text)
 
-# --- START: MODIFIED MUSIC FUNCTION ---
+# --- YouTube helpers (validation + search) ---
+def extract_youtube_id(url_or_text: str) -> Optional[str]:
+    if not url_or_text:
+        return None
+    # Look for common URL patterns; YouTube video IDs are typically 11 chars
+    m = re.search(r'(?:v=|\/v\/|youtu\.be\/|\/embed\/)([A-Za-z0-9_\-]{11})', url_or_text)
+    if m:
+        return m.group(1)
+    # If the user provided just an ID
+    m2 = re.match(r'^[A-Za-z0-9_\-]{11}$', url_or_text.strip())
+    if m2:
+        return url_or_text.strip()
+    return None
+
+def youtube_check_video_status(video_id: str, region_code: str = "TH") -> dict:
+    if not video_id:
+        return {"ok": False, "reason": "no_video_id", "info": None}
+
+    if YOUTUBE_API_KEY:
+        params = {"part": "status,contentDetails", "id": video_id, "key": YOUTUBE_API_KEY}
+        try:
+            r = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=6)
+        except Exception as e:
+            return {"ok": False, "reason": f"yt_api_request_failed_{e}", "info": None}
+        if r.status_code != 200:
+            return {"ok": False, "reason": f"yt_api_error_{r.status_code}", "info": r.text}
+        data = r.json()
+        items = data.get("items", [])
+        if not items:
+            return {"ok": False, "reason": "not_found", "info": data}
+        item = items[0]
+        status = item.get("status", {})
+        content = item.get("contentDetails", {})
+
+        if status.get("privacyStatus") != "public":
+            return {"ok": False, "reason": f"privacy_{status.get('privacyStatus')}", "info": item}
+        if status.get("uploadStatus") and status.get("uploadStatus") != "processed":
+            return {"ok": False, "reason": f"upload_{status.get('uploadStatus')}", "info": item}
+        region = content.get("regionRestriction", {})
+        blocked = region.get("blocked")
+        allowed = region.get("allowed")
+        if blocked and region_code and region_code in blocked:
+            return {"ok": False, "reason": f"region_blocked_{region_code}", "info": item}
+        return {"ok": True, "reason": "ok", "info": item}
+
+    # Fallback: oEmbed check or page text scan
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        r2 = requests.get(oembed_url, timeout=6)
+        if r2.status_code == 200:
+            return {"ok": True, "reason": "ok_oembed", "info": r2.json()}
+        else:
+            watch = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=6)
+            txt = watch.text.lower()
+            if "video unavailable" in txt or "ไม่พร้อมใช้งาน" in txt or "this video is unavailable" in txt:
+                return {"ok": False, "reason": "page_unavailable", "info": {"status_code": watch.status_code}}
+            return {"ok": True, "reason": "assume_ok", "info": {"status_code": watch.status_code}}
+    except Exception as e:
+        return {"ok": False, "reason": f"fallback_error_{e}", "info": None}
+
+def youtube_search_videos(query: str, max_results: int = 5) -> list:
+    if not query:
+        return []
+    if not YOUTUBE_API_KEY:
+        return []
+    params = {
+        "part": "snippet",
+        "q": query,
+        "type": "video",
+        "maxResults": max_results,
+        "key": YOUTUBE_API_KEY,
+        "regionCode": "TH"
+    }
+    try:
+        r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=6)
+    except Exception:
+        return []
+    if r.status_code != 200:
+        return []
+    resp = r.json()
+    items = resp.get("items", [])
+    ids = []
+    for it in items:
+        vid = it.get("id", {}).get("videoId")
+        if vid:
+            ids.append(vid)
+    return ids
+
+# --- Modified music function with validation ---
 def get_music_link_message(user_message: str):
-    """Finds a YouTube link for a song request using the AI."""
     app.logger.info(f"Handling music request: {user_message}")
-    
-    # --- 1. Clean the user message ---
-    # ลบคำสั่งหลัก ("เปิดเพลง", "หาเพลง", "ขอเพลง") ออกจากข้อความ
     music_keywords = ["เปิดเพลง", "หาเพลง", "ขอเพลง"]
     song_title = user_message
     for keyword in music_keywords:
         if song_title.startswith(keyword):
-            song_title = song_title[len(keyword):].strip() # ตัดคำสั่งทิ้ง
-            break # เจอแล้ว หยุดเลย
-    
-    # ป้องกันกรณีที่ผู้ใช้พิมพ์ "เปิดเพลง" เฉยๆ
+            song_title = song_title[len(keyword):].strip()
+            break
     if not song_title:
         return TextMessage(text="กรุณาระบุชื่อเพลงด้วยครับ เช่น 'เปิดเพลง [ชื่อเพลง]'")
 
-    # --- 2. Improve the AI prompt ---
-    # ขอให้ AI หาลิงก์ที่ "น่าเชื่อถือ" หรือ "เป็นทางการ"
     search_prompt = (
-        f"คุณคือผู้ช่วยค้นหาเพลง กรุณาค้นหาลิงก์ YouTube ที่เป็นทางการ (Official) หรือเป็นที่นิยมที่สุด (Most Popular) "
-        f"สำหรับเพลงนี้: '{song_title}' "
-        f"และตอบกลับมาเฉพาะลิงก์ YouTube ที่ถูกต้องลิงก์เดียวเท่านั้น ถ้าหาไม่เจอ ให้ตอบว่า 'ผมหาเพลง {song_title} ไม่เจอครับ'"
+        f"คุณคือผู้ช่วยค้นหาเพลง กรุณาค้นหาลิงก์ YouTube ที่เป็นทางการ (Official) หรือเพลงที่มีคุณภาพดี "
+        f"สำหรับเพลงนี้: '{song_title}' และตอบกลับมาเฉพาะลิงก์ YouTube ที่ถูกต้องลิงก์เดียวเท่านั้น ถ้าหาไม่เจอให้ตอบว่า 'หาไม่เจอ'"
     )
-    
-    # เรียกใช้ฟังก์ชัน AI ที่เรามีอยู่แล้ว
     ai_response = get_gemini_response(search_prompt)
-    
-    # --- 3. Validate the response ---
-    if "youtube.com" in ai_response or "youtu.be" in ai_response:
-        # ตัดข้อความอื่นๆ ที่ AI อาจจะแถมมา ให้เหลือแค่ลิงก์
-        url_match = re.search(r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be)[^\s]+)', ai_response)
-        if url_match:
-            ai_response = url_match.group(0)
-            # เพิ่มการตัดอักขระแปลกปลอมที่อาจจะติดมากับลิงก์ (เช่น ')
-            ai_response = ai_response.strip(")'\"") 
-        
-        return TextMessage(text=f"จัดไปครับ! 🎵\n{ai_response}")
-    elif "หาไม่เจอ" in ai_response:
-        return TextMessage(text=ai_response)
-    else:
-        return TextMessage(text=f"ผมหาลิงก์ให้ไม่ได้ครับ แต่ได้ผลการค้นหามาว่า:\n{ai_response}")
-# --- END: MODIFIED MUSIC FUNCTION ---
+
+    url_match = re.search(r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be)[^\s\'"]+)', ai_response or "")
+    if url_match:
+        candidate_url = url_match.group(0).strip(")'\"")
+        vid = extract_youtube_id(candidate_url)
+        if vid:
+            status = youtube_check_video_status(vid)
+            if status.get("ok"):
+                return TextMessage(text=f"จัดไปครับ! 🎵\nhttps://www.youtube.com/watch?v={vid}")
+            else:
+                app.logger.info(f"Found video but not playable: {status}")
+                if YOUTUBE_API_KEY:
+                    alt_ids = youtube_search_videos(song_title, max_results=5)
+                    for alt in alt_ids:
+                        st = youtube_check_video_status(alt)
+                        if st.get("ok"):
+                            return TextMessage(text=f"วิดีโอตัวแรกไม่พร้อมใช้งาน ผมหาวิดีโอตัวอื่นมาให้แทน 🎵\nhttps://www.youtube.com/watch?v={alt}")
+                return TextMessage(text="วิดีโอตัวที่พบไม่พร้อมใช้งานแล้วครับ ลองพิมพ์อีกครั้งหรือระบุชื่อศิลปินเพิ่ม (เช่น 'เปิดเพลง Just the two of us - Bill Withers')")
+
+    if "หาไม่เจอ" in (ai_response or "").lower() or not url_match:
+        if YOUTUBE_API_KEY:
+            candidates = youtube_search_videos(song_title, max_results=5)
+            for c in candidates:
+                st = youtube_check_video_status(c)
+                if st.get("ok"):
+                    return TextMessage(text=f"ผมหาวิดีโอที่ตรงกันเจอครับ 🎵\nhttps://www.youtube.com/watch?v={c}")
+            return TextMessage(text="ผมหาวิดีโอที่เล่นได้ไม่เจอ หรือถูกจำกัดในประเทศของคุณ ลองระบุชื่อศิลปินหรือชื่อเพลงให้ละเอียดขึ้นครับ")
+        else:
+            return TextMessage(text=f"{ai_response}\n(หมายเหตุ: หากลิงก์ใช้งานไม่ได้ บอทแนะนำให้ตั้งค่า YOUTUBE_API_KEY เพื่อให้ตรวจสอบสถานะวิดีโอก่อนส่งลิงก์ได้อย่างแม่นยำ)")
+
+    return TextMessage(text=f"ผมหาลิงก์ให้ไม่ได้ครับ แต่ได้ผลการค้นหามาว่า:\n{ai_response}")
 
 def get_exam_countdown_message(user_message: str):
-    """Creates a countdown message for exams based on user input."""
-    # Use explicit keys in EXAM_DATES
     if "กลางภาค" in user_message:
         reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
     elif "ปลายภาค" in user_message:
         reply_text = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
-    else:  # default when user just types "สอบ" or similar
+    else:
         midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"]) if "กลางภาค" in EXAM_DATES else ""
         final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"]) if "ปลายภาค" in EXAM_DATES else ""
         if midterm and final:
@@ -409,12 +466,10 @@ def get_exam_countdown_message(user_message: str):
     return TextMessage(text=reply_text)
 
 # ==========================================================================================
-# --- 6. LINE Bot Event Handlers ---
+# --- 6. LINE Bot Event Handlers & Command Matching ---
 # ==========================================================================================
-
 @handler.add(FollowEvent)
 def handle_follow(event):
-    """Handles when a user adds the bot as a friend."""
     welcome_message = TextMessage(
         text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\n'
              'คุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\n'
@@ -422,9 +477,6 @@ def handle_follow(event):
     )
     reply_to_line(event.reply_token, [welcome_message])
 
-# --- โครงสร้าง Command Mapping ที่ปรับปรุงใหม่ ---
-# เก็บเป็น List of Tuples ทำให้ง่ายต่อการเพิ่ม/ลดคำสั่ง
-# Tuple ประกอบด้วย: ( (คำสั่งที่1, คำสั่งที่2), ฟังก์ชันที่จะทำงาน )
 COMMANDS = [
     (("งาน", "การบ้าน", "เช็คงาน"), get_worksheet_message),
     (("เว็บโรงเรียน", "เว็บ"), get_school_link_message),
@@ -435,74 +487,64 @@ COMMANDS = [
     (("ชีวะ", "เฉลยชีวะ"), get_bio_link_message),
     (("เปิดเพลง", "หาเพลง", "ขอเพลง"), lambda msg: get_music_link_message(msg)),
     (("คำสั่ง", "help", "ช่วยเหลือ"), get_help_message),
-
-    # สำหรับคำสั่งที่ต้องการข้อมูลจาก user_message เราใช้ lambda เพื่อส่งค่าเข้าไป
     (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
 ]
 
 def _keyword_matches(user_message: str, keyword: str) -> bool:
-    """
-    Match keyword more carefully:
-    - For keywords that contain ASCII letters, use word-boundary regex to avoid false positives.
-    - For Thai or other scripts without spaces, fall back to substring match.
-    """
-    if re.search(r'[A-Za-z]', keyword):
-        # escape keyword
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-        return bool(re.search(pattern, user_message, flags=re.IGNORECASE))
-    else:
+    try:
+        kw = keyword.lower()
+        um = user_message.lower()
+        # Ensure keyword is not adjacent to ASCII word chars or Thai chars (Unicode range \u0E00-\u0E7F)
+        pattern = rf'(?<![\w\u0E00-\u0E7F]){re.escape(kw)}(?![\w\u0E00-\u0E7F])'
+        return bool(re.search(pattern, um, flags=re.IGNORECASE))
+    except re.error:
         return keyword in user_message
 
 def call_action(action, user_message: str):
-    """
-    Safely call an action that may accept 0 or 1 arguments.
-    Prefer calling with user_message if accepted, else call without args.
-    """
-    # First try calling with one argument
     try:
         return action(user_message)
     except TypeError:
         try:
             return action()
         except TypeError:
-            # last resort: try calling with no args, then with arg with more permissive attempt
             return action(user_message)
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    """Handles incoming text messages from users."""
     user_text = getattr(event.message, "text", "")
     user_message = user_text.lower().strip()
     reply_message = None
 
-    # --- 1. Process Rule-Based Commands ---
+    # Rule-based commands (check longer keywords first to avoid short accidental matches)
     for keywords, action in COMMANDS:
-        if any(_keyword_matches(user_message, keyword) for keyword in keywords):
-            try:
-                reply_message = call_action(action, user_message)
-            except Exception as e:
-                app.logger.error(f"Error calling action for keywords {keywords}: {e}", exc_info=True)
-                reply_message = TextMessage(text="ขออภัยครับ เกิดข้อผิดพลาดขณะประมวลผลคำสั่งของคุณ")
-            break  # found matching command
+        matched = False
+        for keyword in sorted(keywords, key=len, reverse=True):
+            if _keyword_matches(user_message, keyword):
+                try:
+                    reply_message = call_action(action, user_message)
+                except Exception as e:
+                    app.logger.error(f"Error calling action for keywords {keywords}: {e}", exc_info=True)
+                    reply_message = TextMessage(text="ขออภัยครับ เกิดข้อผิดพลาดขณะประมวลผลคำสั่งของคุณ")
+                matched = True
+                break
+        if matched:
+            break
 
-    # --- 2. AI Fallback ---
+    # AI fallback
     if not reply_message:
         ai_response_text = get_gemini_response(user_message)
         reply_message = TextMessage(text=ai_response_text)
 
-    # --- 3. Send Reply ---
     if reply_message:
         reply_to_line(event.reply_token, [reply_message])
     else:
         app.logger.warning(f"No reply was generated for message: {user_message}")
-
 
 # ==========================================================================================
 # --- 7. Flask Web Server ---
 # ==========================================================================================
 @app.route("/callback", methods=['POST'])
 def callback():
-    """Webhook endpoint for LINE platform."""
     signature = request.headers.get('X-Line-Signature')
     if not signature:
         app.logger.error("Missing X-Line-Signature header.")
@@ -521,8 +563,6 @@ def callback():
 
 @app.route("/", methods=['GET'])
 def home():
-    """A simple endpoint to check if the server is running."""
-    # Add a simple check about configuration for easier debugging
     cfg_ok = "OK" if ACCESS_TOKEN and CHANNEL_SECRET else "CONFIG_MISSING"
     return f"MTC Assistant is running! ({cfg_ok})"
 
