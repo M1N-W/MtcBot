@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v12 - fixed bugs and improved robustness
+MTC Assistant v13 - Biology's Answer Feature
 """
 
 # --- 1. Imports ---
@@ -46,7 +46,7 @@ SCHOOL_LINK = "https://www.ben.ac.th/main/"
 TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
 ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
-
+Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/view?usp=sharing"
 # --- Exam Dates ---
 EXAM_DATES = {
     "กลางภาค": datetime.date(2025, 12, 20),
@@ -326,6 +326,10 @@ def get_absence_form_message():
     """Returns a TextMessage with the absence form link."""
     return TextMessage(text=f'นี่คือแบบฟอร์มลากิจ-ลาป่วยนะครับ\n{ABSENCE_LINK}')
 
+def get_bio_link_message():
+    """Returns a TextMessage with the biology link."""
+    return TextMessage(text=f'นี่คือเฉลยชีวะ บทที่ 4-7 นะครับ\n{Bio_LINK}')
+
 def get_help_message():
     """Returns a TextMessage with all commands."""
     help_text = (
@@ -337,7 +341,8 @@ def get_help_message():
         '- "คาบต่อไป/เรียนไรต่อ" = เช็คคาบถัดไปแบบเรียลไทม์\n'
         '- "ลาป่วย/ลากิจ/ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
         '- "สอบ" = นับถอยหลังวันสอบ\n'
-        '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะพยายามตอบด้วย AI'
+        '- "ชีวะ" = เฉลยชีวะ\n'
+        '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะตอบด้วยเอไอ'
     )
     return TextMessage(text=help_text)
 
@@ -381,7 +386,9 @@ COMMANDS = [
     (("เกรด", "ดูเกรด"), get_grade_link_message),
     (("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"), get_next_class_message),
     (("ลาป่วย", "ลากิจ", "ลา"), get_absence_form_message),
+    (("ชีวะ", "เฉลยชีวะ"), get_bio_link_message),
     (("คำสั่ง", "help", "ช่วยเหลือ"), get_help_message),
+
     # สำหรับคำสั่งที่ต้องการข้อมูลจาก user_message เราใช้ lambda เพื่อส่งค่าเข้าไป
     (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
 ]
