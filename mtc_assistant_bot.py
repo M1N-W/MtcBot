@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v14 - Song Searching Feature + YouTube validation
+MTC Assistant v15 - Physic's Answer Feature
 """
 
 # --- 1. Imports ---
@@ -51,6 +51,7 @@ TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
 ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
 Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/view?usp=sharing"
+Physic_LINK = "https://drive.google.com/file/d/15oSPs3jFYpvJRUkFqrCSpETGwOoK0Qpv/view?usp=sharing"
 
 EXAM_DATES = {
     "กลางภาค": datetime.date(2025, 12, 20),
@@ -197,7 +198,7 @@ def _safe_parse_gemini_response(response) -> str:
 
 def get_gemini_response(user_message: str) -> str:
     identity_msg = (
-        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
+        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2"
         "ผมช่วยได้หลายอย่าง เช่น แจ้งตาราง, ลิงก์เว็บโรงเรียน, หาตารางสอน, และช่วยหาข้อมูลทั่วไปด้วย AI"
     )
 
@@ -298,6 +299,10 @@ def get_absence_form_message():
 def get_bio_link_message():
     return TextMessage(text=f'นี่คือเฉลยชีวะ บทที่ 4-7 นะครับ\n{Bio_LINK}')
 
+def get_physic_link_message():
+    return TextMessage(text=f'นี่คือเฉลยฟิสิกส์นะครับ\n{Physic_LINK}')
+
+
 def get_help_message():
     help_text = (
         'คำสั่งทั้งหมด\n'
@@ -306,9 +311,10 @@ def get_help_message():
         '- "ตารางสอน" = ตารางสอนเทอม 2 ห้อง 4/2\n'
         '- "เกรด" = เข้าเว็บเช็คเกรด\n'
         '- "คาบต่อไป/เรียนไรต่อ" = เช็คคาบถัดไปแบบเรียลไทม์\n'
-        '- "ลาป่วย/ลากิจ/ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
+        '- "ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
         '- "สอบ" = นับถอยหลังวันสอบ\n'
         '- "ชีวะ" = เฉลยชีวะ\n'
+        '- "ฟิสิกส์" = เฉลยฟิสิกส์\n'
         '- "เปิดเพลง [ชื่อเพลง]" = หาเพลงจาก Youtube\n'
         '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะตอบด้วยเอไอ'
     )
@@ -318,11 +324,9 @@ def get_help_message():
 def extract_youtube_id(url_or_text: str) -> Optional[str]:
     if not url_or_text:
         return None
-    # Look for common URL patterns; YouTube video IDs are typically 11 chars
     m = re.search(r'(?:v=|\/v\/|youtu\.be\/|\/embed\/)([A-Za-z0-9_\-]{11})', url_or_text)
     if m:
         return m.group(1)
-    # If the user provided just an ID
     m2 = re.match(r'^[A-Za-z0-9_\-]{11}$', url_or_text.strip())
     if m2:
         return url_or_text.strip()
@@ -359,7 +363,6 @@ def youtube_check_video_status(video_id: str, region_code: str = "TH") -> dict:
             return {"ok": False, "reason": f"region_blocked_{region_code}", "info": item}
         return {"ok": True, "reason": "ok", "info": item}
 
-    # Fallback: oEmbed check or page text scan
     try:
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         r2 = requests.get(oembed_url, timeout=6)
@@ -485,8 +488,9 @@ COMMANDS = [
     (("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"), get_next_class_message),
     (("ลาป่วย", "ลากิจ", "ลา"), get_absence_form_message),
     (("ชีวะ", "เฉลยชีวะ"), get_bio_link_message),
+    (("ฟิสิกส์", "เฉลยฟิสิกส์"), get_physic_link_message),
     (("เปิดเพลง", "หาเพลง", "ขอเพลง"), lambda msg: get_music_link_message(msg)),
-    (("คำสั่ง", "help", "ช่วยเหลือ"), get_help_message),
+    (("คำสั่ง", "help"), get_help_message),
     (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
 ]
 
@@ -494,7 +498,6 @@ def _keyword_matches(user_message: str, keyword: str) -> bool:
     try:
         kw = keyword.lower()
         um = user_message.lower()
-        # Ensure keyword is not adjacent to ASCII word chars or Thai chars (Unicode range \u0E00-\u0E7F)
         pattern = rf'(?<![\w\u0E00-\u0E7F]){re.escape(kw)}(?![\w\u0E00-\u0E7F])'
         return bool(re.search(pattern, um, flags=re.IGNORECASE))
     except re.error:
@@ -515,7 +518,6 @@ def handle_message(event):
     user_message = user_text.lower().strip()
     reply_message = None
 
-    # Rule-based commands (check longer keywords first to avoid short accidental matches)
     for keywords, action in COMMANDS:
         matched = False
         for keyword in sorted(keywords, key=len, reverse=True):
@@ -530,7 +532,6 @@ def handle_message(event):
         if matched:
             break
 
-    # AI fallback
     if not reply_message:
         ai_response_text = get_gemini_response(user_message)
         reply_message = TextMessage(text=ai_response_text)
