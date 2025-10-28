@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v15 - Physic's Answer Feature
+MTC Assistant v16 - Physic's Answer Feature และเช็คว่าอีกกี่นาทีถึงคาบต่อไป
 """
 
 # --- 1. Imports ---
@@ -9,6 +9,7 @@ import datetime
 import logging
 import re
 import json
+import math
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -62,9 +63,9 @@ LINE_MAX_TEXT = 5000
 LINE_SAFE_TRUNCATE = 4800
 LOCAL_TZ = ZoneInfo("Asia/Bangkok")
 
-# --- Class schedule omitted for brevity (same as before) ---
+# --- Class Schedule Data ---
 SCHEDULE = {
-    0: [
+    0: [ # วันจันทร์
         {"start": "08:30", "end": "09:25", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
         {"start": "09:25", "end": "10:20", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
         {"start": "10:20", "end": "11:15", "subject": "เคมี (ครูพิทยาภรณ์)", "room": "311"},
@@ -74,7 +75,7 @@ SCHEDULE = {
         {"start": "14:55", "end": "15:50", "subject": "คณิตเพิ่มเติม (ครูมานพ)", "room": "947"},
         {"start": "15:50", "end": "16:45", "subject": "คณิตเพิ่มเติม (ครูมานพ)", "room": "947"},
     ],
-    1: [
+    1: [ # วันอังคาร
         {"start": "08:30", "end": "09:25", "subject": "เคมี (ครูพิทยาภรณ์)", "room": "311"},
         {"start": "09:25", "end": "10:20", "subject": "เคมี (ครูพิทยาภรณ์)", "room": "311"},
         {"start": "10:20", "end": "11:15", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "333"},
@@ -84,13 +85,13 @@ SCHEDULE = {
         {"start": "14:55", "end": "15:50", "subject": "ไทย (ครูเบญจมาศ)", "room": "947"},
         {"start": "15:50", "end": "16:45", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
     ],
-    2: [
+    2: [ # วันพุธ
         {"start": "08:30", "end": "09:25", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
         {"start": "09:25", "end": "10:20", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "10:20", "end": "11:15", "subject": "ประวัติศาสตร์ (ครูณฐพร)", "room": "947"},
         {"start": "11:15", "end": "12:10", "subject": "คณิตพื้นฐาน (ครูปรียา)", "room": "947"},
     ],
-    3: [
+    3: [ # วันพฤหัสบดี
         {"start": "08:30", "end": "09:25", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "09:25", "end": "10:20", "subject": "คณิตเพิ่มพูน (ครูมานพ)", "room": "947"},
         {"start": "10:20", "end": "11:15", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
@@ -99,7 +100,7 @@ SCHEDULE = {
         {"start": "14:00", "end": "14:55", "subject": "อังกฤษเพิ่มเติม (Teacher Mitch)", "room": "947"},
         {"start": "14:55", "end": "15:50", "subject": "คณิตพื้นฐาน (ครูปรียา)", "room": "947"},
     ],
-    4: [
+    4: [ # วันศุกร์
         {"start": "08:30", "end": "09:25", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "09:25", "end": "10:20", "subject": "ชีววิทยา (ครูพิชามญช์)", "room": "323"},
         {"start": "10:20", "end": "11:15", "subject": "อังกฤษพื้นฐาน (ครูวาสนา)", "room": "947"},
@@ -117,7 +118,7 @@ SCHEDULE = {
 configuration = Configuration(access_token=ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 gemini_model = None
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash" # ยืนยันตามที่นายต้องการ
 
 try:
     if GEMINI_API_KEY:
@@ -139,12 +140,13 @@ except Exception as e:
 # ==========================================================================================
 
 def get_next_class_info() -> str:
+    """Checks the schedule and returns a string with the next class information."""
     now = datetime.datetime.now(tz=LOCAL_TZ)
     weekday = now.weekday()
     current_time = now.time()
 
     if weekday not in SCHEDULE:
-        return "วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนไป๊ 🎉"
+        return "วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนเถอะ 🎉"
 
     for period in SCHEDULE[weekday]:
         start_time = datetime.datetime.strptime(period["start"], "%H:%M").time()
@@ -157,6 +159,7 @@ def get_next_class_info() -> str:
     return "วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านไปนอนได้ 🏠"
 
 def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
+    """Calculates days left until an exam and returns a formatted string."""
     today = datetime.datetime.now(tz=LOCAL_TZ).date()
     delta = exam_date - today
     days_left = delta.days
@@ -169,36 +172,45 @@ def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
         return f"การสอบ{exam_name}ได้สิ้นสุดลงแล้วครับ"
 
 def _safe_parse_gemini_response(response) -> str:
+    """Defensively extract text from various SDK response shapes."""
     try:
         if response is None:
             return ""
+        if hasattr(response, 'parts') and response.parts:
+             return "".join(part.text for part in response.parts if hasattr(part, 'text')).strip()
         if hasattr(response, "text"):
             return str(response.text).strip()
         if isinstance(response, dict):
             if "text" in response and response["text"]:
                 return str(response["text"]).strip()
             if "candidates" in response and response["candidates"]:
-                first = response["candidates"][0]
-                if isinstance(first, dict) and "content" in first:
-                    return str(first["content"]).strip()
-                return str(first).strip()
+                first_candidate = response["candidates"][0]
+                if isinstance(first_candidate, dict):
+                    if "content" in first_candidate and isinstance(first_candidate["content"], dict):
+                        if "parts" in first_candidate["content"] and first_candidate["content"]["parts"]:
+                             return "".join(p.get("text", "") for p in first_candidate["content"]["parts"]).strip()
+                    if "text" in first_candidate: # Older format
+                         return str(first_candidate["text"]).strip()
+                return str(first_candidate).strip() # Fallback
         if hasattr(response, "result"):
             return str(getattr(response, "result")).strip()
-        if hasattr(response, "candidates"):
-            c = getattr(response, "candidates")
-            if c:
-                first = c[0]
-                if hasattr(first, "content"):
-                    return str(getattr(first, "content")).strip()
-                return str(first).strip()
-        return str(response).strip()
+        if hasattr(response, "candidates") and response.candidates:
+             first_candidate_obj = response.candidates[0]
+             if hasattr(first_candidate_obj, 'content') and hasattr(first_candidate_obj.content, 'parts') and first_candidate_obj.content.parts:
+                 return "".join(part.text for part in first_candidate_obj.content.parts if hasattr(part, 'text')).strip()
+             if hasattr(first_candidate_obj, 'text'): # Fallback for simpler candidate
+                 return str(getattr(first_candidate_obj, 'text')).strip()
+             return str(first_candidate_obj).strip() # Fallback
+
+        return str(response).strip() # Absolute fallback
     except Exception as e:
         app.logger.debug(f"Error parsing Gemini response: {e}", exc_info=True)
-        return str(response)
+        return str(response) # Return raw response on error
 
 def get_gemini_response(user_message: str) -> str:
+    """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
     identity_msg = (
-        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2"
+        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
         "ผมช่วยได้หลายอย่าง เช่น แจ้งตาราง, ลิงก์เว็บโรงเรียน, หาตารางสอน, และช่วยหาข้อมูลทั่วไปด้วย AI"
     )
 
@@ -212,37 +224,36 @@ def get_gemini_response(user_message: str) -> str:
 
     try:
         response = None
+        # --- Attempt 1: Use instantiated model if available ---
         if gemini_model is not None:
-            if hasattr(gemini_model, "generate_content"):
-                response = gemini_model.generate_content(user_message)
-            elif hasattr(gemini_model, "generate"):
-                response = gemini_model.generate(user_message)
-            else:
-                response = None
+            try:
+                if hasattr(gemini_model, "generate_content"):
+                    response = gemini_model.generate_content(user_message)
+                elif hasattr(gemini_model, "generate"): # Older SDK method
+                    response = gemini_model.generate(user_message)
+            except Exception as model_e:
+                app.logger.warning(f"Instantiated Gemini model call failed: {model_e}", exc_info=True)
+                response = None # Fallback to module-level
 
+        # --- Attempt 2: Use module-level calls as fallback ---
         if response is None:
             try:
-                if hasattr(genai, "generate_text"):
-                    response = genai.generate_text(model=GEMINI_MODEL_NAME, input=user_message)
-                elif hasattr(genai, "chat"):
-                    chat_create = getattr(genai, "chat").create if hasattr(genai.chat, "create") else getattr(genai.chat, "generate", None)
-                    if chat_create:
-                        response = chat_create(model=GEMINI_MODEL_NAME, messages=[{"role": "user", "content": user_message}])
-                    else:
-                        response = None
+                if hasattr(genai, "generate_content"):
+                     response = genai.generate_content(model=GEMINI_MODEL_NAME, contents=user_message)
+                elif hasattr(genai, "generate_text"):
+                    response = genai.generate_text(model=GEMINI_MODEL_NAME, prompt=user_message)
                 else:
-                    if hasattr(genai, "generate"):
-                        response = genai.generate(model=GEMINI_MODEL_NAME, prompt=user_message)
-                    else:
-                        response = None
-            except Exception as e:
-                app.logger.debug(f"Gemini module-level call failed: {e}", exc_info=True)
+                     app.logger.warning("Neither generate_content nor generate_text found at module level.")
+                     response = None
+            except Exception as module_e:
+                app.logger.error(f"Gemini module-level call failed: {module_e}", exc_info=True)
                 response = None
 
         reply_text = _safe_parse_gemini_response(response)
         if not reply_text:
             return "ขออภัยครับ ระบบ AI ตอบไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"
 
+        # --- Post-processing ---
         reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
         reply_text = reply_text.replace('กูเกิล', 'Gemini')
 
@@ -259,21 +270,27 @@ def get_gemini_response(user_message: str) -> str:
 
         return reply_text
     except Exception as e:
-        app.logger.error(f"Gemini API Error: {e}", exc_info=True)
+        app.logger.error(f"General Gemini API Error: {e}", exc_info=True)
         return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
 
+
 def reply_to_line(reply_token: str, messages: list):
+    """Sends a reply message to the LINE user."""
     if not messages:
         app.logger.warning("reply_to_line called with no messages.")
         return
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            line_bot_api.reply_message(
+            response = line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(reply_token=reply_token, messages=messages)
             )
+            if response.status_code != 200:
+                 app.logger.error(f"Error sending reply to LINE (Status: {response.status_code}): {response.body}")
+
     except Exception as e:
         app.logger.error(f"Error sending reply to LINE: {e}", exc_info=True)
+
 
 # ==========================================================================================
 # --- 5. Command-Specific Action Functions ---
@@ -311,7 +328,8 @@ def get_help_message():
         '- "ตารางสอน" = ตารางสอนเทอม 2 ห้อง 4/2\n'
         '- "เกรด" = เข้าเว็บเช็คเกรด\n'
         '- "คาบต่อไป/เรียนไรต่อ" = เช็คคาบถัดไปแบบเรียลไทม์\n'
-        '- "ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
+        '- "อีกกี่นาที/เหลือเวลา/เช็คเวลา" = เช็คเวลาคาบต่อไป (แบบข้ามคาบซ้ำ)\n'
+        '- "ลาป่วย/ลากิจ/ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
         '- "สอบ" = นับถอยหลังวันสอบ\n'
         '- "ชีวะ" = เฉลยชีวะ\n'
         '- "ฟิสิกส์" = เฉลยฟิสิกส์\n'
@@ -341,13 +359,17 @@ def youtube_check_video_status(video_id: str, region_code: str = "TH") -> dict:
         try:
             r = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=6)
         except Exception as e:
+            app.logger.warning(f"YouTube API request failed: {e}")
             return {"ok": False, "reason": f"yt_api_request_failed_{e}", "info": None}
         if r.status_code != 200:
+            app.logger.warning(f"YouTube API error {r.status_code}: {r.text}")
             return {"ok": False, "reason": f"yt_api_error_{r.status_code}", "info": r.text}
+        
         data = r.json()
         items = data.get("items", [])
         if not items:
             return {"ok": False, "reason": "not_found", "info": data}
+        
         item = items[0]
         status = item.get("status", {})
         content = item.get("contentDetails", {})
@@ -356,53 +378,51 @@ def youtube_check_video_status(video_id: str, region_code: str = "TH") -> dict:
             return {"ok": False, "reason": f"privacy_{status.get('privacyStatus')}", "info": item}
         if status.get("uploadStatus") and status.get("uploadStatus") != "processed":
             return {"ok": False, "reason": f"upload_{status.get('uploadStatus')}", "info": item}
+        
         region = content.get("regionRestriction", {})
         blocked = region.get("blocked")
         allowed = region.get("allowed")
         if blocked and region_code and region_code in blocked:
             return {"ok": False, "reason": f"region_blocked_{region_code}", "info": item}
+        
         return {"ok": True, "reason": "ok", "info": item}
 
+    # Fallback (less reliable)
     try:
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         r2 = requests.get(oembed_url, timeout=6)
         if r2.status_code == 200:
             return {"ok": True, "reason": "ok_oembed", "info": r2.json()}
         else:
-            watch = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=6)
+            watch = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=6, headers={'Accept-Language': 'en-US,en;q=0.9,th;q=0.8'})
             txt = watch.text.lower()
             if "video unavailable" in txt or "ไม่พร้อมใช้งาน" in txt or "this video is unavailable" in txt:
                 return {"ok": False, "reason": "page_unavailable", "info": {"status_code": watch.status_code}}
-            return {"ok": True, "reason": "assume_ok", "info": {"status_code": watch.status_code}}
+            return {"ok": True, "reason": "assume_ok_fallback", "info": {"status_code": watch.status_code}}
     except Exception as e:
+        app.logger.warning(f"YouTube fallback check failed: {e}")
         return {"ok": False, "reason": f"fallback_error_{e}", "info": None}
 
+
 def youtube_search_videos(query: str, max_results: int = 5) -> list:
-    if not query:
-        return []
-    if not YOUTUBE_API_KEY:
+    if not query or not YOUTUBE_API_KEY:
         return []
     params = {
-        "part": "snippet",
-        "q": query,
-        "type": "video",
-        "maxResults": max_results,
-        "key": YOUTUBE_API_KEY,
-        "regionCode": "TH"
+        "part": "snippet", "q": query, "type": "video",
+        "maxResults": max_results, "key": YOUTUBE_API_KEY, "regionCode": "TH"
     }
     try:
         r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=6)
-    except Exception:
+    except Exception as e:
+        app.logger.warning(f"YouTube search request failed: {e}")
         return []
     if r.status_code != 200:
+        app.logger.warning(f"YouTube search API error {r.status_code}: {r.text}")
         return []
+    
     resp = r.json()
     items = resp.get("items", [])
-    ids = []
-    for it in items:
-        vid = it.get("id", {}).get("videoId")
-        if vid:
-            ids.append(vid)
+    ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
     return ids
 
 # --- Modified music function with validation ---
@@ -432,27 +452,30 @@ def get_music_link_message(user_message: str):
             if status.get("ok"):
                 return TextMessage(text=f"จัดไปครับ! 🎵\nhttps://www.youtube.com/watch?v={vid}")
             else:
-                app.logger.info(f"Found video but not playable: {status}")
+                app.logger.info(f"Found video {vid} but not playable: {status.get('reason')}")
                 if YOUTUBE_API_KEY:
                     alt_ids = youtube_search_videos(song_title, max_results=5)
                     for alt in alt_ids:
+                        if alt == vid: continue # Skip the already failed one
                         st = youtube_check_video_status(alt)
                         if st.get("ok"):
+                            app.logger.info(f"Found alternative playable video {alt} for '{song_title}'")
                             return TextMessage(text=f"วิดีโอตัวแรกไม่พร้อมใช้งาน ผมหาวิดีโอตัวอื่นมาให้แทน 🎵\nhttps://www.youtube.com/watch?v={alt}")
                 return TextMessage(text="วิดีโอตัวที่พบไม่พร้อมใช้งานแล้วครับ ลองพิมพ์อีกครั้งหรือระบุชื่อศิลปินเพิ่ม (เช่น 'เปิดเพลง Just the two of us - Bill Withers')")
 
-    if "หาไม่เจอ" in (ai_response or "").lower() or not url_match:
-        if YOUTUBE_API_KEY:
-            candidates = youtube_search_videos(song_title, max_results=5)
-            for c in candidates:
-                st = youtube_check_video_status(c)
-                if st.get("ok"):
-                    return TextMessage(text=f"ผมหาวิดีโอที่ตรงกันเจอครับ 🎵\nhttps://www.youtube.com/watch?v={c}")
-            return TextMessage(text="ผมหาวิดีโอที่เล่นได้ไม่เจอ หรือถูกจำกัดในประเทศของคุณ ลองระบุชื่อศิลปินหรือชื่อเพลงให้ละเอียดขึ้นครับ")
-        else:
-            return TextMessage(text=f"{ai_response}\n(หมายเหตุ: หากลิงก์ใช้งานไม่ได้ บอทแนะนำให้ตั้งค่า YOUTUBE_API_KEY เพื่อให้ตรวจสอบสถานะวิดีโอก่อนส่งลิงก์ได้อย่างแม่นยำ)")
+    app.logger.info(f"AI couldn't find a direct link for '{song_title}'. Response: {ai_response}")
+    if YOUTUBE_API_KEY:
+        candidates = youtube_search_videos(song_title, max_results=5)
+        for c in candidates:
+            st = youtube_check_video_status(c)
+            if st.get("ok"):
+                app.logger.info(f"Found playable video {c} via direct search for '{song_title}'")
+                return TextMessage(text=f"ผมหาวิดีโอที่ตรงกันเจอครับ 🎵\nhttps://www.youtube.com/watch?v={c}")
+        return TextMessage(text="ผมหาวิดีโอที่เล่นได้ไม่เจอ หรือถูกจำกัดในประเทศของคุณ ลองระบุชื่อศิลปินหรือชื่อเพลงให้ละเอียดขึ้นครับ")
+    else:
+        fallback_msg = ai_response if ai_response and "หาไม่เจอ" not in ai_response.lower() else f"ผมหาเพลง '{song_title}' ไม่เจอครับ"
+        return TextMessage(text=f"{fallback_msg}\n(หมายเหตุ: หากลิงก์ใช้งานไม่ได้ บอทแนะนำให้ตั้งค่า YOUTUBE_API_KEY เพื่อให้ตรวจสอบสถานะวิดีโอก่อนส่งลิงก์ได้อย่างแม่นยำ)")
 
-    return TextMessage(text=f"ผมหาลิงก์ให้ไม่ได้ครับ แต่ได้ผลการค้นหามาว่า:\n{ai_response}")
 
 def get_exam_countdown_message(user_message: str):
     if "กลางภาค" in user_message:
@@ -467,6 +490,68 @@ def get_exam_countdown_message(user_message: str):
         else:
             reply_text = midterm or final or "ไม่พบวันสอบในระบบครับ"
     return TextMessage(text=reply_text)
+
+# ==========================================================================================
+# --- New: Time-until-next-class helper ---
+# ==========================================================================================
+def get_time_until_next_class_message(user_message: str = ""):
+    """
+    คำนวณจำนวนเวลาที่เหลือจนถึงคาบถัดไป (ข้ามคาบที่เป็นวิชาเดียวกันติดกัน)
+    """
+    now = datetime.datetime.now(tz=LOCAL_TZ)
+    weekday = now.weekday()
+    current_time = now.time()
+
+    if weekday not in SCHEDULE:
+        return TextMessage(text="วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนไป๊ 🎉")
+
+    periods = SCHEDULE[weekday]
+
+    current_index = None
+    for idx, period in enumerate(periods):
+        start_t = datetime.datetime.strptime(period["start"], "%H:%M").time()
+        end_t = datetime.datetime.strptime(period["end"], "%H:%M").time()
+        if start_t <= current_time < end_t:
+            current_index = idx
+            break
+
+    if current_index is None:
+        for idx, period in enumerate(periods):
+            start_t = datetime.datetime.strptime(period["start"], "%H:%M").time()
+            if current_time < start_t:
+                target = period
+                break
+        else:
+            return TextMessage(text="วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านได้เลย 🏠")
+    else:
+        current_subject = periods[current_index]["subject"]
+        target = None
+        for idx in range(current_index + 1, len(periods)):
+            if periods[idx]["subject"] != current_subject:
+                target = periods[idx]
+                break
+        if target is None:
+            return TextMessage(text="วันนี้ไม่มีคาบเรียนที่ต่างจากคาบปัจจุบันอีกแล้วครับ")
+
+    target_start_time = datetime.datetime.strptime(target["start"], "%H:%M").time()
+    target_dt = datetime.datetime.combine(now.date(), target_start_time).replace(tzinfo=LOCAL_TZ)
+    delta_seconds = (target_dt - now).total_seconds()
+    
+    if delta_seconds <= 0:
+        minutes_left = 0
+    else:
+        minutes_left = max(0, math.ceil(delta_seconds / 60))
+
+    if minutes_left == 0:
+        minutes_text = "น้อยกว่า 1 นาที"
+    else:
+        minutes_text = f"{minutes_left} นาที"
+
+    subject = target.get("subject", "ไม่ระบุวิชา")
+    room = target.get("room", "ไม่ระบุห้อง")
+
+    reply = f'เหลือเวลาอีก {minutes_text} ถึงจะเริ่มคาบต่อไปครับ โดยคาบต่อไปคือ \"{subject}\" \"{room}\"'
+    return TextMessage(text=reply)
 
 # ==========================================================================================
 # --- 6. LINE Bot Event Handlers & Command Matching ---
@@ -486,46 +571,58 @@ COMMANDS = [
     (("ตารางเรียน", "ตารางสอน"), get_timetable_image_message),
     (("เกรด", "ดูเกรด"), get_grade_link_message),
     (("คาบต่อไป", "เรียนอะไร", "เรียนไรต่อ"), get_next_class_message),
+    (("อีกกี่นาที", "เหลือเวลา", "เช็คเวลา"), lambda msg: get_time_until_next_class_message(msg)),
     (("ลาป่วย", "ลากิจ", "ลา"), get_absence_form_message),
     (("ชีวะ", "เฉลยชีวะ"), get_bio_link_message),
     (("ฟิสิกส์", "เฉลยฟิสิกส์"), get_physic_link_message),
     (("เปิดเพลง", "หาเพลง", "ขอเพลง"), lambda msg: get_music_link_message(msg)),
-    (("คำสั่ง", "help"), get_help_message),
+    (("คำสั่ง", "help", "ช่วยเหลือ"), get_help_message),
     (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
 ]
 
 def _keyword_matches(user_message: str, keyword: str) -> bool:
+    """Matches keyword as a whole word, even for Thai."""
     try:
         kw = keyword.lower()
         um = user_message.lower()
+
         pattern = rf'(?<![\w\u0E00-\u0E7F]){re.escape(kw)}(?![\w\u0E00-\u0E7F])'
+        
+        prefix_keywords = ["เปิดเพลง", "หาเพลง", "ขอเพลง", "สอบ"]
+        if kw in prefix_keywords:
+             pattern = rf'(^|(?<![\w\u0E00-\u0E7F])){re.escape(kw)}'
+
         return bool(re.search(pattern, um, flags=re.IGNORECASE))
     except re.error:
-        return keyword in user_message
+        app.logger.warning(f"Regex error for keyword '{keyword}'. Falling back to substring match.")
+        return keyword in user_message 
 
 def call_action(action, user_message: str):
+    """Safely call an action that may accept 0 or 1 arguments."""
     try:
         return action(user_message)
     except TypeError:
         try:
             return action()
         except TypeError:
-            return action(user_message)
+             app.logger.error(f"Action {action.__name__} failed both 0 and 1 arg calls.")
+             return action(user_message) 
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_text = getattr(event.message, "text", "")
-    user_message = user_text.lower().strip()
+    user_message = user_text.strip() 
+    user_message_lower = user_message.lower()
     reply_message = None
 
     for keywords, action in COMMANDS:
         matched = False
         for keyword in sorted(keywords, key=len, reverse=True):
-            if _keyword_matches(user_message, keyword):
+            if _keyword_matches(user_message_lower, keyword.lower()):
                 try:
                     reply_message = call_action(action, user_message)
                 except Exception as e:
-                    app.logger.error(f"Error calling action for keywords {keywords}: {e}", exc_info=True)
+                    app.logger.error(f"Error executing action for keyword '{keyword}': {e}", exc_info=True)
                     reply_message = TextMessage(text="ขออภัยครับ เกิดข้อผิดพลาดขณะประมวลผลคำสั่งของคุณ")
                 matched = True
                 break
@@ -546,6 +643,7 @@ def handle_message(event):
 # ==========================================================================================
 @app.route("/callback", methods=['POST'])
 def callback():
+    """Webhook endpoint for LINE platform."""
     signature = request.headers.get('X-Line-Signature')
     if not signature:
         app.logger.error("Missing X-Line-Signature header.")
@@ -564,9 +662,13 @@ def callback():
 
 @app.route("/", methods=['GET'])
 def home():
+    """A simple endpoint to check if the server is running."""
     cfg_ok = "OK" if ACCESS_TOKEN and CHANNEL_SECRET else "CONFIG_MISSING"
-    return f"MTC Assistant is running! ({cfg_ok})"
+    gemini_status = "OK" if GEMINI_API_KEY else "MISSING"
+    yt_status = "OK" if YOUTUBE_API_KEY else "MISSING (Fallback used)"
+    return f"MTC Assistant v15 is running! LINE Config: {cfg_ok}, Gemini Config: {gemini_status}, YouTube Config: {yt_status}"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port)
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
