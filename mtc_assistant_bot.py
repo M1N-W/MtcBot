@@ -558,7 +558,7 @@ def get_time_until_next_class_message(user_message: str = ""):
     room = target.get("room", "ไม่ระบุห้อง")
 
     reply = (
-        f'เหลือเวลาอีก {minutes_text} ถึงจะเริ่มคาบถัดไปครับ\n'
+        f'เหลือเวลาอีก {minutes_text}\n'
         f'คาบถัดไปคือ {subject}\n'
         f'ห้อง {room}'
     )
