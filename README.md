@@ -1,1 +1,1 @@
-# MtcBot
+# MtcBot for cool people
