@@ -118,7 +118,7 @@ SCHEDULE = {
 configuration = Configuration(access_token=ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 gemini_model = None
-GEMINI_MODEL_NAME = "gemini-2.5-flash" # ยืนยันตามที่นายต้องการ
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 try:
     if GEMINI_API_KEY:
@@ -189,23 +189,23 @@ def _safe_parse_gemini_response(response) -> str:
                     if "content" in first_candidate and isinstance(first_candidate["content"], dict):
                         if "parts" in first_candidate["content"] and first_candidate["content"]["parts"]:
                              return "".join(p.get("text", "") for p in first_candidate["content"]["parts"]).strip()
-                    if "text" in first_candidate: # Older format
+                    if "text" in first_candidate: 
                          return str(first_candidate["text"]).strip()
-                return str(first_candidate).strip() # Fallback
+                return str(first_candidate).strip() 
         if hasattr(response, "result"):
             return str(getattr(response, "result")).strip()
         if hasattr(response, "candidates") and response.candidates:
              first_candidate_obj = response.candidates[0]
              if hasattr(first_candidate_obj, 'content') and hasattr(first_candidate_obj.content, 'parts') and first_candidate_obj.content.parts:
                  return "".join(part.text for part in first_candidate_obj.content.parts if hasattr(part, 'text')).strip()
-             if hasattr(first_candidate_obj, 'text'): # Fallback for simpler candidate
+             if hasattr(first_candidate_obj, 'text'):
                  return str(getattr(first_candidate_obj, 'text')).strip()
-             return str(first_candidate_obj).strip() # Fallback
+             return str(first_candidate_obj).strip()
 
-        return str(response).strip() # Absolute fallback
+        return str(response).strip() 
     except Exception as e:
         app.logger.debug(f"Error parsing Gemini response: {e}", exc_info=True)
-        return str(response) # Return raw response on error
+        return str(response) 
 
 def get_gemini_response(user_message: str) -> str:
     """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
@@ -388,7 +388,6 @@ def youtube_check_video_status(video_id: str, region_code: str = "TH") -> dict:
         
         return {"ok": True, "reason": "ok", "info": item}
 
-    # Fallback (less reliable)
     try:
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         r2 = requests.get(oembed_url, timeout=6)
@@ -471,7 +470,7 @@ def get_music_link_message(user_message: str):
             st = youtube_check_video_status(c)
             if st.get("ok"):
                 app.logger.info(f"Found playable video {c} via direct search for '{song_title}'")
-                return TextMessage(text=f"ผมหาวิดีโอที่ตรงกันเจอครับ 🎵\nhttps://www.youtube.com/watch?v={c}")
+                return TextMessage(text=f"ผมหาวิดีโอที่ตรงกันเจอแล้วครับ 🎵\nhttps://www.youtube.com/watch?v={c}")
         return TextMessage(text="ผมหาวิดีโอที่เล่นได้ไม่เจอ หรือถูกจำกัดในประเทศของคุณ ลองระบุชื่อศิลปินหรือชื่อเพลงให้ละเอียดขึ้นครับ")
     else:
         fallback_msg = ai_response if ai_response and "หาไม่เจอ" not in ai_response.lower() else f"ผมหาเพลง '{song_title}' ไม่เจอครับ"
@@ -540,7 +539,6 @@ def get_time_until_next_class_message(user_message: str = ""):
             return TextMessage(text="วันนี้ไม่มีคาบเรียนที่ต่างจากคาบปัจจุบันอีกแล้วครับ")
         target = periods[target_idx]
 
-    # คำนวณเวลาจนถึงเวลาเริ่มของ target
     target_start_time = datetime.datetime.strptime(target["start"], "%H:%M").time()
     target_dt = datetime.datetime.combine(now.date(), target_start_time).replace(tzinfo=LOCAL_TZ)
     delta_seconds = (target_dt - now).total_seconds()
