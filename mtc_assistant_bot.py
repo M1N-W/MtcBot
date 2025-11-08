@@ -55,7 +55,7 @@ Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/vi
 Physic_LINK = "https://drive.google.com/file/d/15oSPs3jFYpvJRUkFqrCSpETGwOoK0Qpv/view?usp=sharing"
 
 EXAM_DATES = {
-    "กลางภาค": datetime.date(2025, 12, 20),
+    "กลางภาค": datetime.date(2025, 12, 26),
     "ปลายภาค": datetime.date(2026, 2, 20)
 }
 
