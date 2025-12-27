@@ -205,12 +205,13 @@ def _safe_parse_gemini_response(response) -> str:
         return str(response) 
 
 def get_gemini_response(user_message: str) -> str:
-    """Gets a response from the Gemini AI model and post-processes it to enforce bot persona."""
+    """Gets a response from the Gemini AI model with persona and date awareness."""
     identity_msg = (
         "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
         "ผมช่วยได้หลายอย่าง เช่น แจ้งตาราง, ลิงก์เว็บโรงเรียน, หาตารางสอน, และช่วยหาข้อมูลทั่วไปด้วย AI"
     )
-
+    
+    # 1. Identity Check
     identity_queries = ["คุณคือใคร", "เป็นใคร", "who are you", "คุณชื่ออะไร", "ชื่ออะไร", "ตัวตน"]
     lowered = user_message.lower()
     if any(q in lowered for q in identity_queries):
@@ -219,38 +220,40 @@ def get_gemini_response(user_message: str) -> str:
     if not GEMINI_API_KEY:
         return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
 
+    # 2. Time Context Preparation
+    now = datetime.datetime.now(tz=LOCAL_TZ)
+    current_date_thai = now.strftime("%d %B")
+    current_year_thai = now.year + 543
+    current_day_thai = now.strftime("%A")
+    full_date_context = f"วันนี้คือ{current_day_thai}ที่ {current_date_thai} พ.ศ. {current_year_thai}"
+    enhanced_prompt = f"(บริบทปัจจุบัน: {full_date_context})\n\nคำถามจากผู้ใช้: {user_message}"
+
     try:
         response = None
-        # --- Attempt 1: Use instantiated model if available ---
+        # Attempt AI call
         if gemini_model is not None:
             try:
-                if hasattr(gemini_model, "generate_content"):
-                    response = gemini_model.generate_content(user_message)
-                elif hasattr(gemini_model, "generate"): # Older SDK method
-                    response = gemini_model.generate(user_message)
+                response = gemini_model.generate_content(enhanced_prompt)
             except Exception as model_e:
-                app.logger.warning(f"Instantiated Gemini model call failed: {model_e}", exc_info=True)
-                response = None # Fallback to module-level
+                app.logger.warning(f"Instantiated Gemini model call failed: {model_e}")
+                response = None
 
-        # --- Attempt 2: Use module-level calls as fallback ---
         if response is None:
             try:
                 if hasattr(genai, "generate_content"):
-                     response = genai.generate_content(model=GEMINI_MODEL_NAME, contents=user_message)
+                     response = genai.generate_content(model=GEMINI_MODEL_NAME, contents=enhanced_prompt)
                 elif hasattr(genai, "generate_text"):
-                    response = genai.generate_text(model=GEMINI_MODEL_NAME, prompt=user_message)
-                else:
-                     app.logger.warning("Neither generate_content nor generate_text found at module level.")
-                     response = None
+                    response = genai.generate_text(model=GEMINI_MODEL_NAME, prompt=enhanced_prompt)
             except Exception as module_e:
-                app.logger.error(f"Gemini module-level call failed: {module_e}", exc_info=True)
+                app.logger.error(f"Gemini module-level call failed: {module_e}")
                 response = None
 
         reply_text = _safe_parse_gemini_response(response)
+        
         if not reply_text:
             return "ขออภัยครับ ระบบ AI ตอบไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"
 
-        # --- Post-processing ---
+        # Post-processing
         reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
         reply_text = reply_text.replace('กูเกิล', 'Gemini')
 
@@ -266,11 +269,10 @@ def get_gemini_response(user_message: str) -> str:
             reply_text = reply_text[:LINE_SAFE_TRUNCATE] + "... (ระบบตัดข้อความที่ยาวเกิน 5,000 คำโดยอัตโนมัติ)"
 
         return reply_text
+
     except Exception as e:
         app.logger.error(f"General Gemini API Error: {e}", exc_info=True)
         return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
-
-
 def reply_to_line(reply_token: str, messages: list):
     """Sends a reply message to the LINE user."""
     if not messages:
@@ -442,7 +444,6 @@ COMMANDS = [
     (("ลาป่วย", "ลากิจ", "ลา"), get_absence_form_message),
     (("ชีวะ", "เฉลยชีวะ"), get_bio_link_message),
     (("ฟิสิกส์", "เฉลยฟิสิกส์"), get_physic_link_message),
-    (("เปิดเพลง", "หาเพลง", "ขอเพลง"), lambda msg: get_music_link_message(msg)),
     (("คำสั่ง", "help", "ช่วยเหลือ"), get_help_message),
     (("สอบ",), lambda msg: get_exam_countdown_message(msg)),
 ]
