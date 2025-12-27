@@ -115,7 +115,7 @@ SCHEDULE = {
 configuration = Configuration(access_token=ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 gemini_model = None
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-3-flash-preview"
 
 try:
     if GEMINI_API_KEY:
