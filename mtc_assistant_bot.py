@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v16 - Physic's Answer Feature และเช็คว่าอีกกี่นาทีถึงคาบต่อไป
+MTC Assistant v.17 ปลายภาคเทอม 2
 """
 
 # --- 1. Imports ---
@@ -34,7 +34,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY')  # Optional but highly recommended
 
 if not ACCESS_TOKEN:
     app.logger.warning("CHANNEL_ACCESS_TOKEN is not set. LINE API calls will fail.")
@@ -42,11 +41,9 @@ if not CHANNEL_SECRET:
     app.logger.warning("CHANNEL_SECRET is not set. Signature verification will fail.")
 if not GEMINI_API_KEY:
     app.logger.info("GEMINI_API_KEY is not set. AI features will be disabled.")
-if not YOUTUBE_API_KEY:
-    app.logger.info("YOUTUBE_API_KEY is not set. YouTube validation will use fallback (less reliable).")
 
 # --- Bot Constants & Links ---
-WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1oCG--zkyp-iyJ8iFKaaTrDZji_sds2VzLWNxOOh7-xk/edit?usp=sharing"
+WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1SwKs4s8HJt2HxAzj_StIh_nopVMe1kwqg7yW13jOdQ4/edit?usp=sharing"
 SCHOOL_LINK = "https://www.ben.ac.th/main/"
 TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
@@ -55,7 +52,7 @@ Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/vi
 Physic_LINK = "https://drive.google.com/file/d/15oSPs3jFYpvJRUkFqrCSpETGwOoK0Qpv/view?usp=sharing"
 
 EXAM_DATES = {
-    "กลางภาค": datetime.date(2025, 12, 26),
+    "กลางภาค": datetime.date(2025, 12, 21),
     "ปลายภาค": datetime.date(2026, 2, 20)
 }
 
@@ -337,145 +334,7 @@ def get_help_message():
         '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะตอบด้วยเอไอ'
     )
     return TextMessage(text=help_text)
-
-# --- YouTube helpers (validation + search) ---
-def extract_youtube_id(url_or_text: str) -> Optional[str]:
-    if not url_or_text:
-        return None
-    m = re.search(r'(?:v=|\/v\/|youtu\.be\/|\/embed\/)([A-Za-z0-9_\-]{11})', url_or_text)
-    if m:
-        return m.group(1)
-    m2 = re.match(r'^[A-Za-z0-9_\-]{11}$', url_or_text.strip())
-    if m2:
-        return url_or_text.strip()
-    return None
-
-def youtube_check_video_status(video_id: str, region_code: str = "TH") -> dict:
-    if not video_id:
-        return {"ok": False, "reason": "no_video_id", "info": None}
-
-    if YOUTUBE_API_KEY:
-        params = {"part": "status,contentDetails", "id": video_id, "key": YOUTUBE_API_KEY}
-        try:
-            r = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=6)
-        except Exception as e:
-            app.logger.warning(f"YouTube API request failed: {e}")
-            return {"ok": False, "reason": f"yt_api_request_failed_{e}", "info": None}
-        if r.status_code != 200:
-            app.logger.warning(f"YouTube API error {r.status_code}: {r.text}")
-            return {"ok": False, "reason": f"yt_api_error_{r.status_code}", "info": r.text}
-        
-        data = r.json()
-        items = data.get("items", [])
-        if not items:
-            return {"ok": False, "reason": "not_found", "info": data}
-        
-        item = items[0]
-        status = item.get("status", {})
-        content = item.get("contentDetails", {})
-
-        if status.get("privacyStatus") != "public":
-            return {"ok": False, "reason": f"privacy_{status.get('privacyStatus')}", "info": item}
-        if status.get("uploadStatus") and status.get("uploadStatus") != "processed":
-            return {"ok": False, "reason": f"upload_{status.get('uploadStatus')}", "info": item}
-        
-        region = content.get("regionRestriction", {})
-        blocked = region.get("blocked")
-        allowed = region.get("allowed")
-        if blocked and region_code and region_code in blocked:
-            return {"ok": False, "reason": f"region_blocked_{region_code}", "info": item}
-        
-        return {"ok": True, "reason": "ok", "info": item}
-
-    try:
-        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        r2 = requests.get(oembed_url, timeout=6)
-        if r2.status_code == 200:
-            return {"ok": True, "reason": "ok_oembed", "info": r2.json()}
-        else:
-            watch = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=6, headers={'Accept-Language': 'en-US,en;q=0.9,th;q=0.8'})
-            txt = watch.text.lower()
-            if "video unavailable" in txt or "ไม่พร้อมใช้งาน" in txt or "this video is unavailable" in txt:
-                return {"ok": False, "reason": "page_unavailable", "info": {"status_code": watch.status_code}}
-            return {"ok": True, "reason": "assume_ok_fallback", "info": {"status_code": watch.status_code}}
-    except Exception as e:
-        app.logger.warning(f"YouTube fallback check failed: {e}")
-        return {"ok": False, "reason": f"fallback_error_{e}", "info": None}
-
-
-def youtube_search_videos(query: str, max_results: int = 5) -> list:
-    if not query or not YOUTUBE_API_KEY:
-        return []
-    params = {
-        "part": "snippet", "q": query, "type": "video",
-        "maxResults": max_results, "key": YOUTUBE_API_KEY, "regionCode": "TH"
-    }
-    try:
-        r = requests.get("https://www.googleapis.com/youtube/v3/search", params=params, timeout=6)
-    except Exception as e:
-        app.logger.warning(f"YouTube search request failed: {e}")
-        return []
-    if r.status_code != 200:
-        app.logger.warning(f"YouTube search API error {r.status_code}: {r.text}")
-        return []
     
-    resp = r.json()
-    items = resp.get("items", [])
-    ids = [it.get("id", {}).get("videoId") for it in items if it.get("id", {}).get("videoId")]
-    return ids
-
-# --- Modified music function with validation ---
-def get_music_link_message(user_message: str):
-    app.logger.info(f"Handling music request: {user_message}")
-    music_keywords = ["เปิดเพลง", "หาเพลง", "ขอเพลง"]
-    song_title = user_message
-    for keyword in music_keywords:
-        if song_title.startswith(keyword):
-            song_title = song_title[len(keyword):].strip()
-            break
-    if not song_title:
-        return TextMessage(text="กรุณาระบุชื่อเพลงด้วยครับ เช่น 'เปิดเพลง [ชื่อเพลง]'")
-
-    search_prompt = (
-        f"คุณคือผู้ช่วยค้นหาเพลง กรุณาค้นหาลิงก์ YouTube ที่เป็นทางการ (Official)"
-        f"สำหรับเพลงนี้: '{song_title}' และตอบกลับมาเฉพาะลิงก์ YouTube ที่ถูกต้องลิงก์เดียวเท่านั้น ถ้าหาไม่เจอให้ตอบว่า 'หาไม่เจอ'"
-    )
-    ai_response = get_gemini_response(search_prompt)
-
-    url_match = re.search(r'(https?://(?:www\.)?(?:youtube\.com|youtu\.be)[^\s\'"]+)', ai_response or "")
-    if url_match:
-        candidate_url = url_match.group(0).strip(")'\"")
-        vid = extract_youtube_id(candidate_url)
-        if vid:
-            status = youtube_check_video_status(vid)
-            if status.get("ok"):
-                return TextMessage(text=f"จัดไปครับ! 🎵\nhttps://www.youtube.com/watch?v={vid}")
-            else:
-                app.logger.info(f"Found video {vid} but not playable: {status.get('reason')}")
-                if YOUTUBE_API_KEY:
-                    alt_ids = youtube_search_videos(song_title, max_results=5)
-                    for alt in alt_ids:
-                        if alt == vid: continue # Skip the already failed one
-                        st = youtube_check_video_status(alt)
-                        if st.get("ok"):
-                            app.logger.info(f"Found alternative playable video {alt} for '{song_title}'")
-                            return TextMessage(text=f"วิดีโอตัวแรกไม่พร้อมใช้งาน ผมหาวิดีโอตัวอื่นมาให้แทน 🎵\nhttps://www.youtube.com/watch?v={alt}")
-                return TextMessage(text="วิดีโอตัวที่พบไม่พร้อมใช้งานแล้วครับ ลองพิมพ์อีกครั้งหรือระบุชื่อศิลปินเพิ่ม (เช่น 'เปิดเพลง Just the two of us - Bill Withers')")
-
-    app.logger.info(f"AI couldn't find a direct link for '{song_title}'. Response: {ai_response}")
-    if YOUTUBE_API_KEY:
-        candidates = youtube_search_videos(song_title, max_results=5)
-        for c in candidates:
-            st = youtube_check_video_status(c)
-            if st.get("ok"):
-                app.logger.info(f"Found playable video {c} via direct search for '{song_title}'")
-                return TextMessage(text=f"ผมหาวิดีโอที่ตรงกันเจอแล้วครับ 🎵\nhttps://www.youtube.com/watch?v={c}")
-        return TextMessage(text="ผมหาวิดีโอที่เล่นได้ไม่เจอ หรือถูกจำกัดในประเทศของคุณ ลองระบุชื่อศิลปินหรือชื่อเพลงให้ละเอียดขึ้นครับ")
-    else:
-        fallback_msg = ai_response if ai_response and "หาไม่เจอ" not in ai_response.lower() else f"ผมหาเพลง '{song_title}' ไม่เจอครับ"
-        return TextMessage(text=f"{fallback_msg}\n(หมายเหตุ: หากลิงก์ใช้งานไม่ได้ บอทแนะนำให้ตั้งค่า YOUTUBE_API_KEY เพื่อให้ตรวจสอบสถานะวิดีโอก่อนส่งลิงก์ได้อย่างแม่นยำ)")
-
-
 def get_exam_countdown_message(user_message: str):
     if "กลางภาค" in user_message:
         reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
@@ -595,10 +454,6 @@ def _keyword_matches(user_message: str, keyword: str) -> bool:
         um = user_message.lower()
 
         pattern = rf'(?<![\w\u0E00-\u0E7F]){re.escape(kw)}(?![\w\u0E00-\u0E7F])'
-        
-        prefix_keywords = ["เปิดเพลง", "หาเพลง", "ขอเพลง", "สอบ"]
-        if kw in prefix_keywords:
-             pattern = rf'(^|(?<![\w\u0E00-\u0E7F])){re.escape(kw)}'
 
         return bool(re.search(pattern, um, flags=re.IGNORECASE))
     except re.error:
@@ -673,8 +528,7 @@ def home():
     """A simple endpoint to check if the server is running."""
     cfg_ok = "OK" if ACCESS_TOKEN and CHANNEL_SECRET else "CONFIG_MISSING"
     gemini_status = "OK" if GEMINI_API_KEY else "MISSING"
-    yt_status = "OK" if YOUTUBE_API_KEY else "MISSING (Fallback used)"
-    return f"MTC Assistant v15 is running! LINE Config: {cfg_ok}, Gemini Config: {gemini_status}, YouTube Config: {yt_status}"
+    return f"MTC Assistant v15 is running! LINE Config: {cfg_ok}, Gemini Config: {gemini_status}"
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5001))
