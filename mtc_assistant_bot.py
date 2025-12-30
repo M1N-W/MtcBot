@@ -1,20 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant v.17 ปลายภาคเทอม 2
+MTC Assistant v.17 (hardened + multi-exam dates)
+- Improved logging
+- Health endpoint
+- Rate limiting (simple per-user)
+- Robust Gemini parsing + fallbacks
+- Safer LINE reply handling
+- Multi-date exam countdown support
+- Input validation & protections
+- Clear env var checks
 """
 
-# --- 1. Imports ---
 import os
 import datetime
 import logging
 import re
 import json
 import math
-from typing import Optional
+import time
+from typing import Optional, List
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify
 
 import google.generativeai as genai
 from linebot.v3 import WebhookHandler
@@ -24,25 +32,37 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 
-# ==========================================================================================
-# --- 2. Configuration & Constants ---
-# ==========================================================================================
+# ---------------------------
+# Configuration & Logging
+# ---------------------------
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Credentials (from environment) ---
-ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
-CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+LOG_LEVEL = logging.DEBUG if os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes") else logging.INFO
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("mtc_assistant")
+logger.setLevel(LOG_LEVEL)
+app.logger.handlers = logger.handlers
+app.logger.setLevel(LOG_LEVEL)
+
+# ---------------------------
+# ENV / Credentials
+# ---------------------------
+ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')  # LINE channel access token
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')      # LINE channel secret
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')      # Gemini (optional)
+PORT = int(os.environ.get('PORT', 5001))
+FLASK_DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
 
 if not ACCESS_TOKEN:
-    app.logger.warning("CHANNEL_ACCESS_TOKEN is not set. LINE API calls will fail.")
+    logger.warning("CHANNEL_ACCESS_TOKEN not set; LINE API calls will fail.")
 if not CHANNEL_SECRET:
-    app.logger.warning("CHANNEL_SECRET is not set. Signature verification will fail.")
+    logger.warning("CHANNEL_SECRET not set; signature verification may fail.")
 if not GEMINI_API_KEY:
-    app.logger.info("GEMINI_API_KEY is not set. AI features will be disabled.")
+    logger.info("GEMINI_API_KEY not set; AI features disabled.")
 
-# --- Bot Constants & Links ---
+# ---------------------------
+# Constants
+# ---------------------------
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1SwKs4s8HJt2HxAzj_StIh_nopVMe1kwqg7yW13jOdQ4/edit?usp=sharing"
 SCHOOL_LINK = "https://www.ben.ac.th/main/"
 TIMETABLE_IMG = "https://img5.pic.in.th/file/secure-sv1/-2395abd52df9b5e08.jpg"
@@ -51,16 +71,42 @@ ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
 Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/view?usp=sharing"
 Physic_LINK = "https://drive.google.com/file/d/15oSPs3jFYpvJRUkFqrCSpETGwOoK0Qpv/view?usp=sharing"
 
+# --- Multi-date EXAM_DATES (lists of datetime.date) ---
 EXAM_DATES = {
-    "กลางภาค": datetime.date(2025, 12, 21),
-    "ปลายภาค": datetime.date(2026, 2, 20)
+    "กลางภาค": [
+        datetime.date(2025, 12, 21),
+        datetime.date(2025, 12, 23),
+        datetime.date(2025, 12, 25),
+    ],
+    "ปลายภาค": [
+        datetime.date(2026, 2, 20),
+        datetime.date(2026, 2, 22),
+        datetime.date(2026, 2, 24),
+    ]
 }
 
 LINE_MAX_TEXT = 5000
 LINE_SAFE_TRUNCATE = 4800
 LOCAL_TZ = ZoneInfo("Asia/Bangkok")
 
-# --- Class Schedule Data ---
+# ---------------------------
+# Simple in-memory rate limiter (per-user)
+# ---------------------------
+RATE_LIMIT_MAX = int(os.environ.get("RATE_LIMIT_MAX", 6))  # messages per window
+RATE_LIMIT_WINDOW = int(os.environ.get("RATE_LIMIT_WINDOW", 60))  # seconds
+_user_message_history = {}  # user_id -> list of timestamps
+
+def is_rate_limited(user_id: str) -> bool:
+    now_ts = time.time()
+    history = _user_message_history.get(user_id, [])
+    recent = [t for t in history if now_ts - t < RATE_LIMIT_WINDOW]
+    recent.append(now_ts)
+    _user_message_history[user_id] = recent
+    return len(recent) > RATE_LIMIT_MAX
+
+# ---------------------------
+# Class Schedule (unchanged from user's data)
+# ---------------------------
 SCHEDULE = {
     0: [ # วันจันทร์
         {"start": "08:30", "end": "09:25", "subject": "ฟิสิกส์ (ครูธนธัญ)", "room": "331"},
@@ -109,11 +155,12 @@ SCHEDULE = {
     ]
 }
 
-# ==========================================================================================
-# --- 3. Initialize APIs ---
-# ==========================================================================================
-configuration = Configuration(access_token=ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
+# ---------------------------
+# Initialize LINE and Gemini
+# ---------------------------
+configuration = Configuration(access_token=ACCESS_TOKEN) if ACCESS_TOKEN else None
+handler = WebhookHandler(CHANNEL_SECRET) if CHANNEL_SECRET else None
+
 gemini_model = None
 GEMINI_MODEL_NAME = "gemini-3-flash-preview"
 
@@ -122,22 +169,149 @@ try:
         genai.configure(api_key=GEMINI_API_KEY)
         try:
             gemini_model = getattr(genai, "GenerativeModel")(GEMINI_MODEL_NAME)
-            app.logger.info("Gemini model instantiated via GenerativeModel.")
+            logger.info("Gemini model instantiated via GenerativeModel.")
         except Exception:
             gemini_model = None
-            app.logger.info("Gemini API configured, will use function-level calls as fallback.")
+            logger.info("Gemini API configured, will use function-level calls as fallback.")
     else:
-        app.logger.warning("GEMINI_API_KEY is not set. AI features will be disabled.")
+        logger.info("GEMINI_API_KEY not provided; AI features disabled.")
 except Exception as e:
-    app.logger.error(f"Error configuring Gemini AI: {e}", exc_info=True)
+    logger.error("Error configuring Gemini API: %s", e, exc_info=True)
     gemini_model = None
 
-# ==========================================================================================
-# --- 4. Core Helper Functions ---
-# ==========================================================================================
+# ---------------------------
+# Helper: safe parse for Gemini responses
+# ---------------------------
+def _safe_parse_gemini_response(response) -> str:
+    try:
+        if response is None:
+            return ""
+        if hasattr(response, "parts") and response.parts:
+            parts = [getattr(part, "text", "") for part in response.parts if getattr(part, "text", None)]
+            return "".join(parts).strip()
+        if hasattr(response, "text") and getattr(response, "text"):
+            return str(getattr(response, "text")).strip()
+        if isinstance(response, dict):
+            if "text" in response and response["text"]:
+                return str(response["text"]).strip()
+            if "candidates" in response and response["candidates"]:
+                first = response["candidates"][0]
+                if isinstance(first, dict):
+                    if "content" in first and isinstance(first["content"], dict):
+                        parts = first["content"].get("parts") or []
+                        return "".join(p.get("text", "") for p in parts).strip()
+                    if "text" in first:
+                        return str(first["text"]).strip()
+                return str(first).strip()
+        if hasattr(response, "result"):
+            return str(getattr(response, "result")).strip()
+        if hasattr(response, "candidates") and getattr(response, "candidates"):
+            first = response.candidates[0]
+            if hasattr(first, "content") and hasattr(first.content, "parts"):
+                return "".join(part.text for part in first.content.parts if hasattr(part, "text")).strip()
+            if hasattr(first, "text"):
+                return str(getattr(first, "text")).strip()
+        return str(response).strip()
+    except Exception as e:
+        logger.debug("Error parsing Gemini response: %s", e, exc_info=True)
+        return str(response)
 
+# ---------------------------
+# Gemini call with fallback and protections
+# ---------------------------
+def get_gemini_response(user_message: str) -> str:
+    identity_msg = (
+        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
+        "ผมช่วยได้หลายอย่าง เช่น แจ้งตาราง, ลิงก์เว็บโรงเรียน, หาตารางสอน, และช่วยหาข้อมูลทั่วไปด้วย AI"
+    )
+
+    identity_queries = ["คุณคือใคร", "เป็นใคร", "who are you", "คุณชื่ออะไร", "ชื่ออะไร", "ตัวตน"]
+    if any(q in user_message.lower() for q in identity_queries):
+        return identity_msg
+
+    if not GEMINI_API_KEY:
+        return "ขออภัยครับ ระบบ AI ยังไม่เปิดใช้งานในขณะนี้"
+
+    now = datetime.datetime.now(tz=LOCAL_TZ)
+    current_date_thai = now.strftime("%d %B")
+    current_year_thai = now.year + 543
+    current_day_thai = now.strftime("%A")
+    full_date_context = f"วันนี้คือ{current_day_thai}ที่ {current_date_thai} พ.ศ. {current_year_thai}"
+    enhanced_prompt = f"(บริบทปัจจุบัน: {full_date_context})\n\nคำถามจากผู้ใช้: {user_message}"
+
+    try:
+        response = None
+        if gemini_model is not None:
+            try:
+                response = gemini_model.generate_content(enhanced_prompt)
+            except Exception as e:
+                logger.warning("Instantiated model call failed: %s", e, exc_info=True)
+                response = None
+
+        if response is None:
+            try:
+                if hasattr(genai, "generate_content"):
+                    response = genai.generate_content(model=GEMINI_MODEL_NAME, contents=enhanced_prompt)
+                elif hasattr(genai, "generate_text"):
+                    response = genai.generate_text(model=GEMINI_MODEL_NAME, prompt=enhanced_prompt)
+            except Exception as e:
+                logger.error("Gemini module-level call failed: %s", e, exc_info=True)
+                response = None
+
+        reply_text = _safe_parse_gemini_response(response)
+        if not reply_text:
+            return "ขออภัยครับ ระบบ AI ตอบไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"
+
+        reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
+        reply_text = reply_text.replace('กูเกิล', 'Gemini')
+
+        if re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', reply_text, flags=re.IGNORECASE):
+            lines = reply_text.splitlines()
+            filtered_lines = [ln for ln in lines if not re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', ln, flags=re.IGNORECASE)]
+            remaining = "\n".join(filtered_lines).strip()
+            reply_text = identity_msg
+            if remaining:
+                reply_text = reply_text + "\n\n" + remaining
+
+        if len(reply_text) > LINE_SAFE_TRUNCATE:
+            reply_text = reply_text[:LINE_SAFE_TRUNCATE] + "... (ข้อความยาวเกิน กำลังตัด)"
+        return reply_text
+
+    except Exception as e:
+        logger.exception("General Gemini API Error")
+        return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
+
+# ---------------------------
+# Safe reply helper (LINE)
+# ---------------------------
+def reply_to_line(reply_token: str, messages: List):
+    if not messages:
+        logger.warning("reply_to_line called with no messages.")
+        return
+    if configuration is None:
+        logger.error("LINE configuration not available (missing ACCESS_TOKEN). Cannot send reply.")
+        return
+    try:
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            response = line_bot_api.reply_message_with_http_info(
+                ReplyMessageRequest(reply_token=reply_token, messages=messages)
+            )
+            status_code = getattr(response, "status_code", None)
+            if status_code is None:
+                try:
+                    status_code = response[1] if isinstance(response, (list, tuple)) and len(response) > 1 else None
+                except Exception:
+                    status_code = None
+            if status_code and not (200 <= int(status_code) < 300):
+                logger.error("Error sending reply to LINE (Status: %s): %s", status_code, getattr(response, "body", ""))
+    except Exception as e:
+        logger.exception("Exception while sending reply to LINE")
+
+# ---------------------------
+# Helper: next class info
+# ---------------------------
 def get_next_class_info() -> str:
-    """Checks the schedule and returns a string with the next class information."""
     now = datetime.datetime.now(tz=LOCAL_TZ)
     weekday = now.weekday()
     current_time = now.time()
@@ -155,145 +329,46 @@ def get_next_class_info() -> str:
                     f"ห้อง : {period['room']}")
     return "วันนี้ไม่มีคาบเรียนแล้วครับ กลับบ้านไปนอนได้ 🏠"
 
-def create_countdown_message(exam_name: str, exam_date: datetime.date) -> str:
-    """Calculates days left until an exam and returns a formatted string."""
+# ---------------------------
+# Multi-date exam countdown helper
+# ---------------------------
+def create_countdown_message(exam_name: str, exam_dates) -> str:
     today = datetime.datetime.now(tz=LOCAL_TZ).date()
-    delta = exam_date - today
-    days_left = delta.days
-
-    if days_left > 0:
-        return f"เหลืออีก {days_left} วันจะถึงวันสอบ{exam_name} ({exam_date.strftime('%d %b %Y')})"
-    elif days_left == 0:
-        return f"วันนี้วันสอบ{exam_name}แล้ว โชคดีนะครับ :)"
+    if not exam_dates:
+        return f"ไม่พบข้อมูลวันสอบสำหรับ {exam_name} ครับ"
+    if isinstance(exam_dates, (datetime.date,)):
+        dates = [exam_dates]
     else:
-        return f"การสอบ{exam_name}ได้สิ้นสุดลงแล้วครับ"
+        dates = list(exam_dates)
+    dates_sorted = sorted(dates)
+    upcoming = [d for d in dates_sorted if d >= today]
+    if upcoming:
+        next_date = upcoming[0]
+        delta = (next_date - today).days
+        if delta > 0:
+            return f"เหลืออีก {delta} วันจะถึงวันสอบ {exam_name} ({next_date.strftime('%d %b %Y')})"
+        elif delta == 0:
+            return f"วันนี้คือวันสอบ {exam_name} ({next_date.strftime('%d %b %Y')}) ขอให้โชคดีครับ"
+    last_date = dates_sorted[-1]
+    return f"การสอบ{exam_name}ได้สิ้นสุดลงแล้ว (ครั้งสุดท้ายในชุดนี้: {last_date.strftime('%d %b %Y')})"
 
-def _safe_parse_gemini_response(response) -> str:
-    """Defensively extract text from various SDK response shapes."""
-    try:
-        if response is None:
-            return ""
-        if hasattr(response, 'parts') and response.parts:
-             return "".join(part.text for part in response.parts if hasattr(part, 'text')).strip()
-        if hasattr(response, "text"):
-            return str(response.text).strip()
-        if isinstance(response, dict):
-            if "text" in response and response["text"]:
-                return str(response["text"]).strip()
-            if "candidates" in response and response["candidates"]:
-                first_candidate = response["candidates"][0]
-                if isinstance(first_candidate, dict):
-                    if "content" in first_candidate and isinstance(first_candidate["content"], dict):
-                        if "parts" in first_candidate["content"] and first_candidate["content"]["parts"]:
-                             return "".join(p.get("text", "") for p in first_candidate["content"]["parts"]).strip()
-                    if "text" in first_candidate: 
-                         return str(first_candidate["text"]).strip()
-                return str(first_candidate).strip() 
-        if hasattr(response, "result"):
-            return str(getattr(response, "result")).strip()
-        if hasattr(response, "candidates") and response.candidates:
-             first_candidate_obj = response.candidates[0]
-             if hasattr(first_candidate_obj, 'content') and hasattr(first_candidate_obj.content, 'parts') and first_candidate_obj.content.parts:
-                 return "".join(part.text for part in first_candidate_obj.content.parts if hasattr(part, 'text')).strip()
-             if hasattr(first_candidate_obj, 'text'):
-                 return str(getattr(first_candidate_obj, 'text')).strip()
-             return str(first_candidate_obj).strip()
+def get_exam_countdown_message(user_message: str):
+    um = (user_message or "").lower()
+    responses = []
+    if "กลางภาค" in um:
+        responses.append(create_countdown_message("กลางภาค", EXAM_DATES.get("กลางภาค", [])))
+    if "ปลายภาค" in um:
+        responses.append(create_countdown_message("ปลายภาค", EXAM_DATES.get("ปลายภาค", [])))
+    if responses:
+        return TextMessage(text="\n\n".join(responses))
+    # summary
+    for name, dates in EXAM_DATES.items():
+        responses.append(f"{name}: {create_countdown_message(name, dates)}")
+    return TextMessage(text="\n\n".join(responses))
 
-        return str(response).strip() 
-    except Exception as e:
-        app.logger.debug(f"Error parsing Gemini response: {e}", exc_info=True)
-        return str(response) 
-
-def get_gemini_response(user_message: str) -> str:
-    """Gets a response from the Gemini AI model with persona and date awareness."""
-    identity_msg = (
-        "ผมเป็นบอทผู้ช่วยอเนกประสงค์ของห้อง MTC ม.4/2 "
-        "ผมช่วยได้หลายอย่าง เช่น แจ้งตาราง, ลิงก์เว็บโรงเรียน, หาตารางสอน, และช่วยหาข้อมูลทั่วไปด้วย AI"
-    )
-    
-    # 1. Identity Check
-    identity_queries = ["คุณคือใคร", "เป็นใคร", "who are you", "คุณชื่ออะไร", "ชื่ออะไร", "ตัวตน"]
-    lowered = user_message.lower()
-    if any(q in lowered for q in identity_queries):
-        return identity_msg
-
-    if not GEMINI_API_KEY:
-        return "ขออภัยครับ ระบบ AI ของส่วนนี้ยังไม่สมบูรณ์"
-
-    # 2. Time Context Preparation
-    now = datetime.datetime.now(tz=LOCAL_TZ)
-    current_date_thai = now.strftime("%d %B")
-    current_year_thai = now.year + 543
-    current_day_thai = now.strftime("%A")
-    full_date_context = f"วันนี้คือ{current_day_thai}ที่ {current_date_thai} พ.ศ. {current_year_thai}"
-    enhanced_prompt = f"(บริบทปัจจุบัน: {full_date_context})\n\nคำถามจากผู้ใช้: {user_message}"
-
-    try:
-        response = None
-        # Attempt AI call
-        if gemini_model is not None:
-            try:
-                response = gemini_model.generate_content(enhanced_prompt)
-            except Exception as model_e:
-                app.logger.warning(f"Instantiated Gemini model call failed: {model_e}")
-                response = None
-
-        if response is None:
-            try:
-                if hasattr(genai, "generate_content"):
-                     response = genai.generate_content(model=GEMINI_MODEL_NAME, contents=enhanced_prompt)
-                elif hasattr(genai, "generate_text"):
-                    response = genai.generate_text(model=GEMINI_MODEL_NAME, prompt=enhanced_prompt)
-            except Exception as module_e:
-                app.logger.error(f"Gemini module-level call failed: {module_e}")
-                response = None
-
-        reply_text = _safe_parse_gemini_response(response)
-        
-        if not reply_text:
-            return "ขออภัยครับ ระบบ AI ตอบไม่ได้ในขณะนี้ ลองใหม่อีกครั้ง"
-
-        # Post-processing
-        reply_text = re.sub(r'\b[Gg]oogle\b', 'Gemini', reply_text)
-        reply_text = reply_text.replace('กูเกิล', 'Gemini')
-
-        if re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', reply_text, flags=re.IGNORECASE):
-            lines = reply_text.splitlines()
-            filtered_lines = [ln for ln in lines if not re.search(r'(แบบจำลอง|ฝึกโดย|ฝึกอบรม|trained by|model)', ln, flags=re.IGNORECASE)]
-            remaining = "\n".join(filtered_lines).strip()
-            reply_text = identity_msg
-            if remaining:
-                reply_text = reply_text + "\n\n" + remaining
-
-        if len(reply_text) > LINE_SAFE_TRUNCATE:
-            reply_text = reply_text[:LINE_SAFE_TRUNCATE] + "... (ระบบตัดข้อความที่ยาวเกิน 5,000 คำโดยอัตโนมัติ)"
-
-        return reply_text
-
-    except Exception as e:
-        app.logger.error(f"General Gemini API Error: {e}", exc_info=True)
-        return "ขออภัยครับ ตอนนี้ผมมีปัญหาในการเชื่อมต่อกับ AI ลองใหม่อีกครั้งนะ"
-def reply_to_line(reply_token: str, messages: list):
-    """Sends a reply message to the LINE user."""
-    if not messages:
-        app.logger.warning("reply_to_line called with no messages.")
-        return
-    try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            response = line_bot_api.reply_message_with_http_info(
-                ReplyMessageRequest(reply_token=reply_token, messages=messages)
-            )
-            if response.status_code != 200:
-                 app.logger.error(f"Error sending reply to LINE (Status: {response.status_code}): {response.body}")
-
-    except Exception as e:
-        app.logger.error(f"Error sending reply to LINE: {e}", exc_info=True)
-
-
-# ==========================================================================================
-# --- 5. Command-Specific Action Functions ---
-# ==========================================================================================
+# ---------------------------
+# Action / Command functions
+# ---------------------------
 def get_worksheet_message():
     return TextMessage(text=f'นี่คือตารางเช็คงานห้องเรานะครับ\n{WORKSHEET_LINK}')
 
@@ -318,7 +393,6 @@ def get_bio_link_message():
 def get_physic_link_message():
     return TextMessage(text=f'นี่คือเฉลยฟิสิกส์นะครับ\n{Physic_LINK}')
 
-
 def get_help_message():
     help_text = (
         'คำสั่งทั้งหมด\n'
@@ -327,41 +401,19 @@ def get_help_message():
         '- "ตารางสอน" = ตารางสอนเทอม 2 ห้อง 4/2\n'
         '- "เกรด" = เข้าเว็บเช็คเกรด\n'
         '- "คาบต่อไป/เรียนไรต่อ" = เช็คคาบถัดไปแบบเรียลไทม์\n'
-        '- "อีกกี่นาที/เหลือเวลา/เช็คเวลา" = เช็คเวลาคาบต่อไป (แบบข้ามคาบซ้ำ)\n'
+        '- "อีกกี่นาที/เหลือเวลา/เช็คเวลา" = เช็คเวลาคาบถัดไป\n'
         '- "ลาป่วย/ลากิจ/ลา" = แบบฟอร์มลากิจ-ลาป่วย\n'
         '- "สอบ" = นับถอยหลังวันสอบ\n'
-        '- "อีกกี่นาที" = เช็คว่าอีกกี่นาทีจะถึงคาบถัดไปแบบเรียลไทม์\n'
         '- "ชีวะ" = เฉลยชีวะ\n'
         '- "ฟิสิกส์" = เฉลยฟิสิกส์\n'
         '- ถ้าพิมพ์ข้อความอื่น ๆ ผมจะตอบด้วยเอไอ'
     )
     return TextMessage(text=help_text)
-    
-def get_exam_countdown_message(user_message: str):
-    if "กลางภาค" in user_message:
-        reply_text = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"])
-    elif "ปลายภาค" in user_message:
-        reply_text = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"])
-    else:
-        midterm = create_countdown_message("กลางภาค", EXAM_DATES["กลางภาค"]) if "กลางภาค" in EXAM_DATES else ""
-        final = create_countdown_message("ปลายภาค", EXAM_DATES["ปลายภาค"]) if "ปลายภาค" in EXAM_DATES else ""
-        if midterm and final:
-            reply_text = f"{midterm}\n\n{final}"
-        else:
-            reply_text = midterm or final or "ไม่พบวันสอบในระบบครับ"
-    return TextMessage(text=reply_text)
 
-# ==========================================================================================
-# --- New: Time-until-next-class helper ---
-# ==========================================================================================
+# ---------------------------
+# Time-until-next-class helper (robust)
+# ---------------------------
 def get_time_until_next_class_message(user_message: str = ""):
-    """
-    คำนวณจำนวนเวลาที่เหลือจนถึงคาบถัดไป (ข้ามคาบที่เป็นวิชาเดียวกันติดกัน)
-    คืนค่าเป็น TextMessage ในรูปแบบ:
-    เหลือเวลาอีก... ถึงจะเริ่มคาบถัดไปครับ
-    คาบถัดไปคือ [วิชา(คุณครู)]
-    ห้อง ...
-    """
     now = datetime.datetime.now(tz=LOCAL_TZ)
     weekday = now.weekday()
     current_time = now.time()
@@ -370,7 +422,6 @@ def get_time_until_next_class_message(user_message: str = ""):
         return TextMessage(text="วันนี้วันหยุดไม่ใช่วันเรียน กลับไปนอนไป๊ 🎉")
 
     periods = SCHEDULE[weekday]
-
     current_index = None
     for idx, period in enumerate(periods):
         start_t = datetime.datetime.strptime(period["start"], "%H:%M").time()
@@ -383,7 +434,6 @@ def get_time_until_next_class_message(user_message: str = ""):
         for idx, period in enumerate(periods):
             start_t = datetime.datetime.strptime(period["start"], "%H:%M").time()
             if current_time < start_t:
-                target_idx = idx
                 target = period
                 break
         else:
@@ -402,38 +452,17 @@ def get_time_until_next_class_message(user_message: str = ""):
     target_start_time = datetime.datetime.strptime(target["start"], "%H:%M").time()
     target_dt = datetime.datetime.combine(now.date(), target_start_time).replace(tzinfo=LOCAL_TZ)
     delta_seconds = (target_dt - now).total_seconds()
-    if delta_seconds <= 0:
-        minutes_left = 0
-    else:
-        minutes_left = max(0, math.ceil(delta_seconds / 60))
+    minutes_left = 0 if delta_seconds <= 0 else max(0, math.ceil(delta_seconds / 60))
 
-    if minutes_left == 0:
-        minutes_text = "น้อยกว่า 1 นาที"
-    else:
-        minutes_text = f"{minutes_left} นาที"
-
+    minutes_text = "น้อยกว่า 1 นาที" if minutes_left == 0 else f"{minutes_left} นาที"
     subject = target.get("subject", "ไม่ระบุวิชา")
     room = target.get("room", "ไม่ระบุห้อง")
-
-    reply = (
-        f'เหลือเวลาอีก {minutes_text}\n'
-        f'คาบถัดไปคือ {subject}\n'
-        f'ห้อง {room}'
-    )
+    reply = f'เหลือเวลาอีก {minutes_text}\nคาบถัดไปคือ {subject}\nห้อง {room}'
     return TextMessage(text=reply)
 
-# ==========================================================================================
-# --- 6. LINE Bot Event Handlers & Command Matching ---
-# ==========================================================================================
-@handler.add(FollowEvent)
-def handle_follow(event):
-    welcome_message = TextMessage(
-        text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\n'
-             'คุณจะลองพิมพ์คำสั่งต่างๆ หรือจะคุยเล่นกับผมก็ได้นะ!\n\n'
-             'พิมพ์ "คำสั่ง" เพื่อดูรายการคำสั่งทั้งหมดนะครับ'
-    )
-    reply_to_line(event.reply_token, [welcome_message])
-
+# ---------------------------
+# Commands & matching
+# ---------------------------
 COMMANDS = [
     (("งาน", "การบ้าน", "เช็คงาน"), get_worksheet_message),
     (("เว็บโรงเรียน", "เว็บ"), get_school_link_message),
@@ -449,33 +478,61 @@ COMMANDS = [
 ]
 
 def _keyword_matches(user_message: str, keyword: str) -> bool:
-    """Matches keyword as a whole word, even for Thai."""
     try:
         kw = keyword.lower()
         um = user_message.lower()
-
         pattern = rf'(?<![\w\u0E00-\u0E7F]){re.escape(kw)}(?![\w\u0E00-\u0E7F])'
-
         return bool(re.search(pattern, um, flags=re.IGNORECASE))
     except re.error:
-        app.logger.warning(f"Regex error for keyword '{keyword}'. Falling back to substring match.")
-        return keyword in user_message 
+        logger.warning("Regex error for keyword '%s'. Falling back to substring match.", keyword)
+        return keyword in user_message
 
 def call_action(action, user_message: str):
-    """Safely call an action that may accept 0 or 1 arguments."""
     try:
         return action(user_message)
     except TypeError:
         try:
             return action()
         except TypeError:
-             app.logger.error(f"Action {action.__name__} failed both 0 and 1 arg calls.")
-             return action(user_message) 
+            logger.error("Action %s failed both 0 and 1 arg calls.", getattr(action, "__name__", str(action)))
+            return action(user_message)
 
-@handler.add(MessageEvent, message=TextMessageContent)
+# ---------------------------
+# Event handlers
+# ---------------------------
+@handler.add(FollowEvent) if handler else (lambda f: f)
+def handle_follow(event):
+    welcome_message = TextMessage(
+        text='สวัสดีคับ! ผมคือ MTC Assistant ผู้ช่วยอเนกประสงค์ของห้อง ม.4/2\n'
+             'พิมพ์ "คำสั่ง" เพื่อดูรายการคำสั่งทั้งหมดนะครับ'
+    )
+    try:
+        reply_to_line(event.reply_token, [welcome_message])
+    except Exception:
+        logger.exception("Failed to send follow reply")
+
+@handler.add(MessageEvent, message=TextMessageContent) if handler else (lambda f: f)
 def handle_message(event):
     user_text = getattr(event.message, "text", "")
-    user_message = user_text.strip() 
+    user_message = user_text.strip()
+    if not user_message:
+        reply_to_line(event.reply_token, [TextMessage(text="ขออภัยครับ ผมรับข้อความประเภทนี้ไม่ได้นะ ลองพิมพ์เป็นข้อความธรรมดาได้ไหม")])
+        return
+
+    # Determine user id for rate limiting & logging
+    user_id = None
+    try:
+        user_id = event.source.user_id if hasattr(event, "source") and getattr(event.source, "user_id", None) else None
+    except Exception:
+        user_id = None
+    if not user_id:
+        user_id = f"anon-{request.remote_addr or 'unknown'}"
+
+    if is_rate_limited(user_id):
+        logger.info("Rate limit triggered for user %s", user_id)
+        reply_to_line(event.reply_token, [TextMessage(text="คุณส่งข้อความเร็วจนเกินไป ลองช้าลงอีกนิดนะครับ")])
+        return
+
     user_message_lower = user_message.lower()
     reply_message = None
 
@@ -486,7 +543,7 @@ def handle_message(event):
                 try:
                     reply_message = call_action(action, user_message)
                 except Exception as e:
-                    app.logger.error(f"Error executing action for keyword '{keyword}': {e}", exc_info=True)
+                    logger.exception("Error executing action for keyword %s: %s", keyword, e)
                     reply_message = TextMessage(text="ขออภัยครับ เกิดข้อผิดพลาดขณะประมวลผลคำสั่งของคุณ")
                 matched = True
                 break
@@ -495,43 +552,55 @@ def handle_message(event):
 
     if not reply_message:
         ai_response_text = get_gemini_response(user_message)
+        if len(ai_response_text) > LINE_MAX_TEXT:
+            ai_response_text = ai_response_text[:LINE_SAFE_TRUNCATE] + "... (ข้อความตัด)"
         reply_message = TextMessage(text=ai_response_text)
 
-    if reply_message:
-        reply_to_line(event.reply_token, [reply_message])
-    else:
-        app.logger.warning(f"No reply was generated for message: {user_message}")
+    try:
+        if reply_message:
+            reply_to_line(event.reply_token, [reply_message])
+        else:
+            logger.warning("No reply generated for message: %s", user_message)
+    except Exception:
+        logger.exception("Failed to send reply to LINE")
 
-# ==========================================================================================
-# --- 7. Flask Web Server ---
-# ==========================================================================================
+# ---------------------------
+# Flask webhooks + health
+# ---------------------------
 @app.route("/callback", methods=['POST'])
 def callback():
-    """Webhook endpoint for LINE platform."""
-    signature = request.headers.get('X-Line-Signature')
+    signature = request.headers.get('X-Line-Signature') or request.headers.get('x-line-signature')
     if not signature:
-        app.logger.error("Missing X-Line-Signature header.")
+        logger.error("Missing X-Line-Signature header.")
         abort(400)
     body = request.get_data(as_text=True)
-    app.logger.info(f"Request body: {body}")
+    logger.debug("Request body: %s", body)
+    if handler is None:
+        logger.error("Webhook handler not configured (missing CHANNEL_SECRET).")
+        abort(500)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        app.logger.error("Invalid signature. Please check your channel secret.")
+        logger.error("Invalid signature. Check CHANNEL_SECRET.")
         abort(400)
     except Exception as e:
-        app.logger.error(f"Error handling request: {e}", exc_info=True)
+        logger.exception("Error handling request: %s", e)
         abort(500)
-    return 'OK'
+    return "OK", 200
 
 @app.route("/", methods=['GET'])
 def home():
-    """A simple endpoint to check if the server is running."""
     cfg_ok = "OK" if ACCESS_TOKEN and CHANNEL_SECRET else "CONFIG_MISSING"
     gemini_status = "OK" if GEMINI_API_KEY else "MISSING"
-    return f"MTC Assistant v15 is running! LINE Config: {cfg_ok}, Gemini Config: {gemini_status}"
+    return f"MTC Assistant v17 is running! LINE Config: {cfg_ok}, Gemini Config: {gemini_status}"
 
+@app.route("/healthz", methods=['GET'])
+def healthz():
+    return jsonify({"status": "ok", "time": datetime.datetime.now(tz=LOCAL_TZ).isoformat()}), 200
+
+# ---------------------------
+# Run
+# ---------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5001))
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    logger.info("Starting MTC Assistant on port %s (debug=%s)", PORT, FLASK_DEBUG)
+    app.run(host='0.0.0.0', port=PORT, debug=FLASK_DEBUG)
