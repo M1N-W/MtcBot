@@ -1,4 +1,4 @@
-MTC Assistant v.18
+MTC Assistant 
 
   ผู้ช่วยอเนกประสงค์สำหรับนักเรียนห้อง MTC ม.4/2 พัฒนาด้วย Python และเชื่อมต่อกับ LINE Messaging API พร้อมระบบประมวลผลคำถามด้วย Gemini AI
 
