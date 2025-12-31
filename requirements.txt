@@ -4,3 +4,4 @@ line-bot-sdk>=3.0.0
 google-generativeai
 requests>=2.28.0
 tzdata
+firebase-admin
