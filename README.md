@@ -1,1 +1,1 @@
-# MtcBot for cool people
+# MtcBot for MTC Classroom 4/2
