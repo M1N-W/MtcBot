@@ -217,7 +217,7 @@ handler = WebhookHandler(CHANNEL_SECRET) if CHANNEL_SECRET else None
 # Gemini Configuration (V.18)
 # ---------------------------
 gemini_model = None
-GEMINI_MODEL_NAME = "gemini-1.5-flash"
+GEMINI_MODEL_NAME = "gemini-3-flash-preview"
 
 if GEMINI_API_KEY:
     try:
@@ -298,7 +298,7 @@ def clear_homework_db() -> str:
 
 def get_worksheet_message(user_message: str = "") -> TextMessage:
     """ส่งลิงก์ใบงาน"""
-    return TextMessage(text=f"📝 ใบงานอยู่ที่นี่ครับ {WORKSHEET_LINK}")
+    return TextMessage(text=f"📝 ตารางงานอยู่นี่ครับ {WORKSHEET_LINK}")
 
 def get_school_link_message(user_message: str = "") -> TextMessage:
     """ส่งลิงก์เว็บโรงเรียน"""
