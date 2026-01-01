@@ -1,17 +1,17 @@
 # 🤖 MTC Assistant v20 - Refactored Modular Edition
 
-LINE Bot ผู้ช่วยอเนกประสงค์สำหรับห้อง MTC ม.4/2 ที่ถูก refactor ให้มีโครงสร้างที่ชัดเจนและดูแลรักษาง่าย
+LINE Bot ผู้ช่วยอเนกประสงค์สำหรับห้อง MTC ม.4/2 ที่ถูกรีแฟกเตอร์ใหม่ให้มีโครงสร้างที่ชัดเจนและดูแลรักษาง่าย
 
 ## 📁 โครงสร้างโปรเจค
 
 ```
 mtc_assistant_bot/
-├── main.py              # 🚀 Entry point - Flask app & initialization
-├── config.py            # ⚙️ Configuration, constants, messages
-├── features.py          # ✨ Feature functions (schedule, homework, AI)
-├── handlers.py          # 🎯 LINE handlers & command routing
-├── firebase_key.json    # 🔑 Firebase credentials (ไม่อัปโหลด git!)
-└── README.md           # 📖 เอกสารนี้
+├── main.py              🚀 Entry point - Flask app & initialization
+├── config.py            ⚙️ Configuration, constants, messages
+├── features.py          ✨ Feature functions (schedule, homework, AI)
+├── handlers.py          🎯 LINE handlers & command routing
+├── firebase_key.json    🔑 Firebase credentials (ไม่อัปโหลด git!)
+└── README.md           📖 Readme
 ```
 
 ## 🎯 ความแตกต่างจากเวอร์ชันเดิม
