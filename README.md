@@ -10,7 +10,7 @@ mtc_assistant_bot/
 ├── config.py            ⚙️ Configuration, constants, messages
 ├── features.py          ✨ Feature functions (schedule, homework, AI)
 ├── handlers.py          🎯 LINE handlers & command routing
-├── firebase_key.json    🔑 Firebase credentials (ไม่อัปโหลด git!)
+├── firebase_key.json    🔑 Firebase credentials (gitignore)
 └── README.md           📖 Readme
 ```
 
