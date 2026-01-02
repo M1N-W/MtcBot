@@ -74,7 +74,7 @@ LOCAL_TZ = ZoneInfo("Asia/Bangkok")
 # ============================================================================
 WORKSHEET_LINK = "https://docs.google.com/spreadsheets/d/1SwKs4s8HJt2HxAzj_StIh_nopVMe1kwqg7yW13jOdQ4/edit?usp=sharing"
 SCHOOL_LINK = "https://www.ben.ac.th/main/"
-TIMETABLE_IMG = "https://i.ibb.co/PZ8vb0WS/2.jpg"
+TIMETABLE_IMG = "https://img2.pic.in.th/-212cf066040445937.jpg"
 GRADE_LINK = "http://www.dograde2.online/bjrb/"
 ABSENCE_LINK = "https://forms.gle/WjCBTYNxEeCpHShr9"
 Bio_LINK = "https://drive.google.com/file/d/1zd5NND3612JOym6HSzKZnqAS42TH9gmh/view?usp=sharing"
