@@ -34,6 +34,7 @@ from config import (
 from handlers import handler
 
 import features  # Import features module to set global variables
+import broadcast  # Import broadcast module
 
 # ============================================================================
 # FLASK APP INITIALIZATION
@@ -59,6 +60,7 @@ try:
             firebase_admin.initialize_app(cred)
         db = firestore.client()
         features.set_database(db)  # Set database in features module
+        broadcast.set_database(db)  # Set database in broadcast module
         logger.info("🔥 Firebase Connected Successfully!")
     else:
         logger.warning(f"⚠️ Missing {FIREBASE_KEY_PATH}. Homework DB features will be disabled.")
@@ -78,6 +80,15 @@ if GEMINI_API_KEY:
     except Exception as e:
         logger.error(f"❌ Gemini model init failed: {e}")
         gemini_model = None
+
+# ============================================================================
+# LINE API INITIALIZATION (for Broadcast)
+# ============================================================================
+from linebot.v3.messaging import Configuration as LineConfig
+line_config = LineConfig(access_token=ACCESS_TOKEN) if ACCESS_TOKEN else None
+if line_config:
+    broadcast.set_line_api(line_config)
+    logger.info("📢 Broadcast system initialized")
 
 # ============================================================================
 # FLASK ROUTES

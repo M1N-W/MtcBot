@@ -18,7 +18,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 # Import from config
 from config import (
     logger, ACCESS_TOKEN, CHANNEL_SECRET, MESSAGES,
-    RATE_LIMIT_MAX, RATE_LIMIT_WINDOW
+    RATE_LIMIT_MAX, RATE_LIMIT_WINDOW, ADMIN_USER_IDS
 )
 
 # Import from features
@@ -30,6 +30,9 @@ from features import (
     get_music_link_message, get_gemini_response,
     add_homework_to_db, get_homeworks_from_db, clear_homework_db
 )
+
+# Import broadcast functions
+import broadcast
 
 # ============================================================================
 # LINE BOT CONFIGURATION
@@ -170,6 +173,12 @@ def handle_message(event):
     
     logger.info("Message from %s: %s", user_id, user_message[:100])
     
+    # Track user for broadcast (เก็บ user_id ไว้ใน Firebase)
+    try:
+        broadcast.track_user(user_id)
+    except Exception as e:
+        logger.error(f"Failed to track user: {e}")
+    
     # Check rate limit
     if is_rate_limited(user_id):
         logger.info("Rate limit triggered for user %s", user_id)
@@ -178,6 +187,80 @@ def handle_message(event):
     
     user_message_lower = user_message.lower()
     reply_message = None
+    
+    # ===============================================
+    # Check Admin Commands First
+    # ===============================================
+    if user_id in ADMIN_USER_IDS:
+        # Broadcast Command
+        if user_message.startswith("ประกาศ "):
+            message_to_broadcast = user_message.replace("ประกาศ ", "", 1).strip()
+            if message_to_broadcast:
+                announcement = broadcast.create_announcement(
+                    "ประกาศจากผู้ดูแล", 
+                    message_to_broadcast
+                )
+                result = broadcast.broadcast_message(announcement)
+                broadcast.save_broadcast_history(user_id, announcement, result)
+                reply_message = TextMessage(text=result['message'])
+            else:
+                reply_message = TextMessage(
+                    text="⚠️ รูปแบบ: ประกาศ [ข้อความ]\nตัวอย่าง: ประกาศ พรุ่งนี้มีสอบฟิสิกส์"
+                )
+        
+        # Broadcast with template
+        elif user_message.startswith("ประกาศด่วน "):
+            urgent_msg = user_message.replace("ประกาศด่วน ", "", 1).strip()
+            if urgent_msg:
+                alert = broadcast.create_urgent_alert(urgent_msg)
+                result = broadcast.broadcast_message(alert)
+                broadcast.save_broadcast_history(user_id, alert, result)
+                reply_message = TextMessage(text=result['message'])
+            else:
+                reply_message = TextMessage(
+                    text="⚠️ รูปแบบ: ประกาศด่วน [ข้อความ]\nตัวอย่าง: ประกาศด่วน วันนี้เลิกเรียนเร็ว!"
+                )
+        
+        # เตือนการบ้าน
+        elif user_message.startswith("เตือนการบ้าน "):
+            reminder_msg = user_message.replace("เตือนการบ้าน ", "", 1).strip()
+            if reminder_msg:
+                reminder = broadcast.create_reminder("การบ้าน", reminder_msg)
+                result = broadcast.broadcast_message(reminder)
+                broadcast.save_broadcast_history(user_id, reminder, result)
+                reply_message = TextMessage(text=result['message'])
+            else:
+                reply_message = TextMessage(
+                    text="⚠️ รูปแบบ: เตือนการบ้าน [รายละเอียด]\n"
+                         "ตัวอย่าง: เตือนการบ้าน ฟิสิกส์ต้องส่งพรุ่งนี้!"
+                )
+        
+        # ดูสถิติ Broadcast
+        elif user_message in ["สถิติประกาศ", "broadcast stats", "stats broadcast"]:
+            reply_message = TextMessage(text=broadcast.get_broadcast_stats())
+        
+        # จำนวนผู้ใช้
+        elif user_message in ["จำนวนผู้ใช้", "user count", "ผู้ใช้"]:
+            count = broadcast.get_user_count()
+            reply_message = TextMessage(text=f"👥 จำนวนผู้ใช้ทั้งหมด: {count} คน")
+        
+        # คำสั่ง Admin Help
+        elif user_message in ["admin", "คำสั่งแอดมิน"]:
+            admin_help = (
+                "👨‍💼 *คำสั่งแอดมิน*\n\n"
+                "📢 *การประกาศ:*\n"
+                "• ประกาศ [ข้อความ] - ส่งประกาศทั่วไป\n"
+                "• ประกาศด่วน [ข้อความ] - ส่งประกาศด่วน\n"
+                "• เตือนการบ้าน [รายละเอียด] - เตือนเรื่องการบ้าน\n\n"
+                "📊 *สถิติ:*\n"
+                "• สถิติประกาศ - ดูสถิติการส่ง\n"
+                "• จำนวนผู้ใช้ - จำนวนคนที่แอดบอท\n\n"
+                "💡 *ตัวอย่าง:*\n"
+                "ประกาศ พรุ่งนี้มีสอบฟิสิกส์นะครับ\n"
+                "ประกาศด่วน วันนี้เลิกเรียนเร็ว!\n"
+                "เตือนการบ้าน คณิตต้องส่งพรุ่งนี้"
+            )
+            reply_message = TextMessage(text=admin_help)
 
     # -----------------------------------------------------
     # [NEW] ส่วนเสริมสำหรับปุ่ม Rich Menu "วิธีสั่งการบ้าน" (แทรกตรงนี้!)

@@ -52,6 +52,17 @@ RATE_LIMIT_MAX = int(os.environ.get("RATE_LIMIT_MAX", 6))
 RATE_LIMIT_WINDOW = int(os.environ.get("RATE_LIMIT_WINDOW", 60))
 
 # ============================================================================
+# ADMIN CONFIGURATION
+# ============================================================================
+# ใส่ LINE User ID ของคุณที่นี่ (หาได้จาก log เมื่อส่งข้อความ)
+# หรือตั้งค่าใน environment variable
+ADMIN_USER_IDS = os.environ.get('ADMIN_USER_IDS', '').split(',')
+if not ADMIN_USER_IDS or ADMIN_USER_IDS == ['']:
+    # Default admin (ใส่ user_id ของคุณที่นี่)
+    ADMIN_USER_IDS = []  # เพิ่ม user_id ของคุณตรงนี้เช่น ['U1234567890abcdef']
+    logger.warning("No admin users configured. Set ADMIN_USER_IDS in environment or config.")
+
+# ============================================================================
 # CONSTANTS
 # ============================================================================
 LINE_MAX_TEXT = 5000
