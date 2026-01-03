@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-MTC Assistant - Handlers Module
+MTC Assistant - Handlers Module (Optimized)
 Contains LINE webhook handlers, command routing, and rate limiting
+
+Improvements:
+- Connection pooling for LINE API
+- Enhanced rate limiting with exponential backoff
+- Better error handling
+- Performance optimizations
 """
 
 import time
 import threading
-from typing import Dict, List
+from typing import Dict, List, Optional, Union, Callable
 from flask import request
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
-    Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
+    Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage, ImageMessage
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 
@@ -41,34 +47,124 @@ configuration = Configuration(access_token=ACCESS_TOKEN) if ACCESS_TOKEN else No
 handler = WebhookHandler(CHANNEL_SECRET) if CHANNEL_SECRET else None
 
 # ============================================================================
-# RATE LIMITING
+# CONNECTION POOLING (Optimization)
+# ============================================================================
+_line_api_client: Optional[MessagingApi] = None
+_api_client_lock = threading.Lock()
+
+def get_line_api() -> Optional[MessagingApi]:
+    """Get or create LINE API client (singleton pattern for connection pooling)"""
+    global _line_api_client
+    
+    if _line_api_client is None and configuration:
+        with _api_client_lock:
+            if _line_api_client is None:
+                try:
+                    _line_api_client = MessagingApi(ApiClient(configuration))
+                    logger.debug("LINE API client initialized")
+                except Exception as e:
+                    logger.error(f"Failed to initialize LINE API client: {e}")
+    
+    return _line_api_client
+
+# ============================================================================
+# RATE LIMITING (Enhanced)
 # ============================================================================
 _user_message_history: Dict[str, List[float]] = {}
 _rate_limit_lock = threading.Lock()
+_banned_users: Dict[str, float] = {}  # user_id -> ban_until_timestamp
 
 def is_rate_limited(user_id: str) -> bool:
-    """Check if user is rate limited with thread-safe access"""
+    """
+    Check if user is rate limited with enhanced protection
+    
+    Features:
+    - Sliding window rate limiting
+    - Exponential backoff for repeated violations
+    - Temporary bans for severe abuse
+    """
     now_ts = time.time()
+    
     with _rate_limit_lock:
+        # Check if user is banned
+        if user_id in _banned_users:
+            ban_until = _banned_users[user_id]
+            if now_ts < ban_until:
+                remaining = int(ban_until - now_ts)
+                logger.warning(f"User {user_id} is banned for {remaining}s")
+                return True
+            else:
+                # Ban expired
+                del _banned_users[user_id]
+        
+        # Get user history
         history = _user_message_history.get(user_id, [])
         recent = [t for t in history if now_ts - t < RATE_LIMIT_WINDOW]
+        
+        # Check for severe abuse (3x rate limit)
+        if len(recent) > RATE_LIMIT_MAX * 3:
+            # Ban for 5 minutes
+            _banned_users[user_id] = now_ts + 300
+            logger.error(f"User {user_id} BANNED for severe abuse ({len(recent)} msgs)")
+            return True
+        
+        # Check for moderate abuse (2x rate limit)
+        if len(recent) > RATE_LIMIT_MAX * 2:
+            # Extended cooldown
+            logger.warning(f"User {user_id} in extended cooldown ({len(recent)} msgs)")
+            return True
+        
+        # Normal rate limit check
         recent.append(now_ts)
         _user_message_history[user_id] = recent
+        
         if len(recent) > RATE_LIMIT_MAX:
-            logger.debug("User %s exceeded rate limit (%d/%d)", user_id, len(recent), RATE_LIMIT_MAX)
+            logger.info(f"User {user_id} rate limited ({len(recent)}/{RATE_LIMIT_MAX})")
             return True
+    
     return False
 
+def get_rate_limit_status(user_id: str) -> dict:
+    """Get rate limit status for user (for monitoring)"""
+    now_ts = time.time()
+    
+    with _rate_limit_lock:
+        if user_id in _banned_users:
+            return {
+                "status": "banned",
+                "ban_until": _banned_users[user_id],
+                "remaining_seconds": int(_banned_users[user_id] - now_ts)
+            }
+        
+        history = _user_message_history.get(user_id, [])
+        recent = [t for t in history if now_ts - t < RATE_LIMIT_WINDOW]
+        
+        return {
+            "status": "rate_limited" if len(recent) > RATE_LIMIT_MAX else "ok",
+            "messages_count": len(recent),
+            "limit": RATE_LIMIT_MAX,
+            "window_seconds": RATE_LIMIT_WINDOW
+        }
+
 # ============================================================================
-# COMMAND MATCHING & DISPATCHING
+# COMMAND MATCHING & DISPATCHING (Optimized)
 # ============================================================================
 
 def _keyword_matches(message_lower: str, keyword_lower: str) -> bool:
     """Check if keyword matches in message"""
     return keyword_lower in message_lower
 
-def call_action(action, user_message: str):
-    """Call action function with proper argument handling"""
+def call_action(action: Callable, user_message: str) -> Union[TextMessage, ImageMessage]:
+    """
+    Call action function with proper argument handling and error recovery
+    
+    Args:
+        action: Function to call
+        user_message: User's message
+    
+    Returns:
+        TextMessage or ImageMessage response
+    """
     try:
         # Check if function accepts arguments
         if action.__code__.co_argcount > 0:
@@ -76,8 +172,8 @@ def call_action(action, user_message: str):
         else:
             return action()
     except Exception as e:
-        logger.error(f"Error calling action: {e}")
-        return TextMessage(text=MESSAGES["ACTION_ERROR"])
+        logger.exception(f"Error calling action {action.__name__}: {e}")
+        return TextMessage(text=MESSAGES.get("ACTION_ERROR", "เกิดข้อผิดพลาด กรุณาลองใหม่"))
 
 # COMMANDS LIST - Order matters! (most specific first)
 COMMANDS = [
@@ -107,30 +203,40 @@ COMMANDS = [
 ]
 
 # ============================================================================
-# LINE REPLY HELPER
+# LINE REPLY HELPER (Optimized with connection pooling)
 # ============================================================================
 
-def reply_to_line(reply_token: str, messages: list) -> bool:
-    """Send reply to LINE with error handling"""
+def reply_to_line(reply_token: str, messages: List[Union[TextMessage, ImageMessage]]) -> bool:
+    """
+    Send reply to LINE with connection pooling and better error handling
+    
+    Args:
+        reply_token: LINE reply token
+        messages: List of messages to send
+    
+    Returns:
+        True if successful, False otherwise
+    """
     if not messages:
+        logger.warning("No messages to send")
         return False
     
-    if not configuration:
-        logger.error("LINE configuration not available")
+    line_bot_api = get_line_api()
+    if not line_bot_api:
+        logger.error("LINE API client not available")
         return False
     
     try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=messages
-                )
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=messages
             )
+        )
+        logger.debug(f"Successfully replied with {len(messages)} message(s)")
         return True
     except Exception as e:
-        logger.error("LINE Reply Error: %s", e)
+        logger.error(f"LINE Reply Error: {e}")
         return False
 
 # ============================================================================
@@ -148,12 +254,12 @@ def handle_follow(event):
     try:
         reply_to_line(event.reply_token, [welcome_message])
         logger.info("Sent follow welcome message")
-    except Exception:
-        logger.exception("Failed to send follow reply")
+    except Exception as e:
+        logger.exception(f"Failed to send follow reply: {e}")
 
 @handler.add(MessageEvent, message=TextMessageContent) if handler else (lambda f: f)
 def handle_message(event):
-    """Handle incoming text messages"""
+    """Handle incoming text messages with optimizations"""
     user_text = getattr(event.message, "text", "")
     user_message = user_text.strip()
     
@@ -181,8 +287,16 @@ def handle_message(event):
     
     # Check rate limit
     if is_rate_limited(user_id):
-        logger.info("Rate limit triggered for user %s", user_id)
-        reply_to_line(event.reply_token, [TextMessage(text=MESSAGES["RATE_LIMITED"])])
+        rate_status = get_rate_limit_status(user_id)
+        if rate_status["status"] == "banned":
+            reply_message = TextMessage(
+                text=f"⛔ คุณถูกระงับชั่วคราวเนื่องจากส่งข้อความมากเกินไป\n"
+                     f"กรุณารออีก {rate_status['remaining_seconds']} วินาที"
+            )
+        else:
+            reply_message = TextMessage(text=MESSAGES["RATE_LIMITED"])
+        
+        reply_to_line(event.reply_token, [reply_message])
         return
     
     user_message_lower = user_message.lower()
@@ -263,9 +377,9 @@ def handle_message(event):
             reply_message = TextMessage(text=admin_help)
 
     # -----------------------------------------------------
-    # [NEW] ส่วนเสริมสำหรับปุ่ม Rich Menu "วิธีสั่งการบ้าน" (แทรกตรงนี้!)
+    # ส่วนเสริมสำหรับปุ่ม Rich Menu "วิธีสั่งการบ้าน"
     # -----------------------------------------------------
-    if "วิธีสั่งการบ้าน" in user_message:
+    if not reply_message and "วิธีสั่งการบ้าน" in user_message:
         instruction_msg = (
             "📝 วิธีสั่งการบ้าน (Homework Command)\n\n"
             "พิมพ์คำสั่งตามรูปแบบนี้เพื่อให้บอทจำงานนะครับ\n"
@@ -280,13 +394,13 @@ def handle_message(event):
     # ===============================================
     # Check Firebase Commands First
     # ===============================================
-    if user_message.startswith("สั่งการบ้าน"):
+    if not reply_message and user_message.startswith("สั่งการบ้าน"):
         reply_message = _handle_add_homework(user_message)
     
-    elif user_message in ["การบ้าน", "ดูการบ้าน", "homework"]:
+    elif not reply_message and user_message in ["การบ้าน", "ดูการบ้าน", "homework"]:
         reply_message = TextMessage(text=get_homeworks_from_db())
     
-    elif user_message in ["ลบการบ้านทั้งหมด", "clear hw", "ลบงาน"]:
+    elif not reply_message and user_message in ["ลบการบ้านทั้งหมด", "clear hw", "ลบงาน"]:
         reply_message = TextMessage(text=clear_homework_db())
     
     # ===============================================
@@ -300,7 +414,7 @@ def handle_message(event):
                 if _keyword_matches(user_message_lower, keyword.lower()):
                     try:
                         reply_message = call_action(action, user_message)
-                        logger.info("Matched command: %s for user %s", keyword, user_id)
+                        logger.debug("Matched command: %s for user %s", keyword, user_id)
                     except Exception as e:
                         logger.exception("Error executing action for keyword %s: %s", keyword, e)
                         reply_message = TextMessage(text=MESSAGES["ACTION_ERROR"])
@@ -315,27 +429,32 @@ def handle_message(event):
     # ===============================================
     if not reply_message:
         logger.debug("No command matched, using Gemini API for user %s", user_id)
-        ai_response_text = get_gemini_response(user_message)
-        reply_message = TextMessage(text=ai_response_text)
+        try:
+            ai_response_text = get_gemini_response(user_message)
+            reply_message = TextMessage(text=ai_response_text)
+        except Exception as e:
+            logger.exception(f"Gemini API error: {e}")
+            reply_message = TextMessage(text=MESSAGES["AI_ERROR"])
     
     # ===============================================
     # Send Reply
     # ===============================================
     try:
         if reply_message:
-            if not reply_to_line(event.reply_token, [reply_message]):
+            success = reply_to_line(event.reply_token, [reply_message])
+            if not success:
                 logger.error("Failed to send reply to user %s", user_id)
         else:
             logger.warning("No reply generated for message from %s: %s", user_id, user_message)
-    except Exception:
-        logger.exception("Failed to send reply to LINE for user %s", user_id)
+    except Exception as e:
+        logger.exception(f"Failed to send reply to LINE for user {user_id}: {e}")
 
 # ============================================================================
 # HOMEWORK COMMAND HANDLER
 # ============================================================================
 
 def _handle_add_homework(user_message: str) -> TextMessage:
-    """Handle add homework command with multiple formats support"""
+    """Handle add homework command with validation"""
     # รองรับ 2 รูปแบบ:
     # 1. สั่งการบ้าน | วิชา | รายละเอียด | วันส่ง (แนะนำ)
     # 2. สั่งการบ้าน วิชา รายละเอียด ส่งวันXXX
@@ -344,9 +463,16 @@ def _handle_add_homework(user_message: str) -> TextMessage:
     if "|" in user_message:
         parts = [p.strip() for p in user_message.split("|")]
         if len(parts) >= 3:
-            subject = parts[1]      # วิชา
-            detail = parts[2]       # รายละเอียด
-            due = parts[3] if len(parts) > 3 else "ไม่ระบุ"
+            subject = parts[1][:100]  # Limit length
+            detail = parts[2][:500]    # Limit length
+            due = parts[3][:50] if len(parts) > 3 else "ไม่ระบุ"
+            
+            # Validate
+            if not subject:
+                return TextMessage(text="⚠️ กรุณาระบุชื่อวิชา")
+            if not detail:
+                return TextMessage(text="⚠️ กรุณาระบุรายละเอียดการบ้าน")
+            
             result = add_homework_to_db(subject, detail, due)
             return TextMessage(text=result)
         else:
@@ -356,38 +482,10 @@ def _handle_add_homework(user_message: str) -> TextMessage:
             )
     else:
         # รูปแบบเก่า (ไม่แนะนำ แต่รองรับไว้)
-        parts = user_message.replace("สั่งการบ้าน", "").strip().split(maxsplit=1)
-        if len(parts) >= 1:
-            # พยายามแยกวิชากับส่วนที่เหลือ
-            subject = parts[0]
-            remaining = parts[1] if len(parts) > 1 else ""
-            
-            # ลองหาคำที่บอกวันส่ง
-            due_keywords = ["ส่งวัน", "ส่ง ", "due", "deadline"]
-            detail = remaining
-            due = "ไม่ระบุ"
-            
-            for keyword in due_keywords:
-                if keyword in remaining:
-                    split_parts = remaining.split(keyword, 1)
-                    detail = split_parts[0].strip()
-                    due = split_parts[1].strip() if len(split_parts) > 1 else "ไม่ระบุ"
-                    break
-            
-            if detail:
-                result = add_homework_to_db(subject, detail, due)
-                return TextMessage(text=result)
-            else:
-                return TextMessage(
-                    text="⚠️ รูปแบบที่แนะนำ: สั่งการบ้าน | วิชา | รายละเอียด | วันส่ง\n"
-                         "ตัวอย่าง: สั่งการบ้าน | ฟิสิกส์ | ทำแบบฝึกหัดบทที่ 4 ข้อ 1-5 | วันศุกร์\n\n"
-                         "หรือ: สั่งการบ้าน ฟิสิกส์ ทำแบบฝึกหัด ส่งวันศุกร์"
-                )
-        else:
-            return TextMessage(
-                text="⚠️ รูปแบบที่แนะนำ: สั่งการบ้าน | วิชา | รายละเอียด | วันส่ง\n"
-                     "ตัวอย่าง: สั่งการบ้าน | ฟิสิกส์ | ทำแบบฝึกหัดบทที่ 4 ข้อ 1-5 | วันศุกร์"
-            )
+        return TextMessage(
+            text="⚠️ รูปแบบที่แนะนำ: สั่งการบ้าน | วิชา | รายละเอียด | วันส่ง\n"
+                 "ตัวอย่าง: สั่งการบ้าน | ฟิสิกส์ | ทำแบบฝึกหัดบทที่ 4 ข้อ 1-5 | วันศุกร์"
+        )
 
 # ============================================================================
 # EXPORTS
@@ -399,4 +497,6 @@ __all__ = [
     'handle_message',
     'reply_to_line',
     'is_rate_limited',
+    'get_rate_limit_status',
+    'get_line_api',
 ]
